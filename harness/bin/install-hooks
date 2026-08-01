@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+HOOKS_DIR="$WORKSPACE_ROOT/harness/hooks"
+
+repositories=("$WORKSPACE_ROOT" frontend backend blockchain marketMaker)
+
+for repository in "${repositories[@]}"; do
+  repository_path="$repository"
+  if [[ "$repository" != "$WORKSPACE_ROOT" ]]; then
+    repository_path="$WORKSPACE_ROOT/$repository"
+  fi
+  if ! git -C "$repository_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'install-hooks: skipping non-Git path: %s\n' "$repository"
+    continue
+  fi
+  existing_hooks_path="$(git -C "$repository_path" config --get core.hooksPath || true)"
+  if [[ -n "$existing_hooks_path" && "$existing_hooks_path" != "$HOOKS_DIR" && "${HARNESS_REPLACE_HOOKS:-}" != "1" ]]; then
+    printf 'install-hooks: existing hooksPath for %s (%s); set HARNESS_REPLACE_HOOKS=1 to replace intentionally\n' \
+      "$repository" "$existing_hooks_path" >&2
+    exit 1
+  fi
+  git -C "$repository_path" config core.hooksPath "$HOOKS_DIR"
+  printf 'install-hooks: configured %s\n' "$repository"
+done

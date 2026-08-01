@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+issue_id="${1:-}"
+repository="${2:-}"
+shift_count=0
+
+if (( $# >= 2 )); then
+  shift_count=2
+fi
+if (( shift_count > 0 )); then
+  shift "$shift_count"
+fi
+objective="$*"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ || -z "$repository" || -z "$objective" ]]; then
+  printf 'usage: %s <ISSUE-ID> <frontend|backend|blockchain|marketMaker> <objective>\n' "$0" >&2
+  exit 2
+fi
+
+if ! jq -e --arg repository "$repository" '.repositories[$repository] != null' "$MANIFEST" >/dev/null; then
+  printf 'start-ticket: unknown repository: %s\n' "$repository" >&2
+  exit 2
+fi
+
+run_dir="$RUNS_ROOT/$issue_id"
+if [[ -e "$run_dir" ]]; then
+  printf 'start-ticket: resuming existing run: %s\n' "$run_dir"
+  exit 0
+fi
+
+mkdir -p "$run_dir"
+created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+jq -n \
+  --arg issue_id "$issue_id" \
+  --arg objective "$objective" \
+  --arg repository "$repository" \
+  --arg created_at "$created_at" \
+  '{
+    issue_id: $issue_id,
+    objective: $objective,
+    acceptance_criteria: [],
+    repositories: [$repository],
+    dependencies: [],
+    status: "planned",
+    created_at: $created_at
+  }' > "$run_dir/task.json"
+
+printf '# Current\n\n- Owner: unassigned\n- Worktree: unassigned\n- Next action: add acceptance criteria and approved plan\n- Blockers: none recorded\n' > "$run_dir/current.md"
+printf '# Exploration\n\nRecord only relevant paths, patterns, and constraints.\n' > "$run_dir/exploration.md"
+printf '# Decisions\n\nRecord decisions required by downstream agents.\n' > "$run_dir/decisions.md"
+
+jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
+  '{issue_id: $issue_id, repository: $repository, status: "pending", summary: "", files_changed: [], known_issues: []}' \
+  > "$run_dir/implementation.json"
+jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
+  '{issue_id: $issue_id, repository: $repository, verdict: "pending", findings: []}' \
+  > "$run_dir/review.json"
+jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
+  '{issue_id: $issue_id, repository: $repository, tier: "fast", overall: "pending", commands: []}' \
+  > "$run_dir/verification.json"
+
+printf 'start-ticket: created %s\n' "$run_dir"
+printf 'start-ticket: Linear remains authoritative; complete acceptance criteria before implementation\n'

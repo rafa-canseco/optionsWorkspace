@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+issue_id="${1:-}"
+next_status="${2:-review}"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+  printf 'usage: %s <ISSUE-ID> [planned|review|blocked|done]\n' "$0" >&2
+  exit 2
+fi
+case "$next_status" in
+  planned|review|blocked|done) ;;
+  *)
+    printf 'release-ticket: invalid next status: %s\n' "$next_status" >&2
+    exit 2
+    ;;
+esac
+
+run_dir="$RUNS_ROOT/$issue_id"
+claim_dir="$run_dir/.claim"
+if [[ ! -f "$claim_dir/owner.json" ]]; then
+  printf 'release-ticket: no active claim for %s\n' "$issue_id" >&2
+  exit 1
+fi
+
+"$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+
+case "$next_status" in
+  review)
+    if ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
+       ! jq -e '.overall == "passed"' "$run_dir/verification.json" >/dev/null; then
+      printf 'release-ticket: review requires implemented handoff and passing verification\n' >&2
+      exit 1
+    fi
+    ;;
+  done)
+    if ! jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null ||
+       ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
+       ! jq -e '.verdict == "approved"' "$run_dir/review.json" >/dev/null ||
+       ! jq -e '.tier == "full" and .overall == "passed"' "$run_dir/verification.json" >/dev/null; then
+      printf 'release-ticket: done requires acceptance criteria, implementation, approved review, and passing full verification\n' >&2
+      exit 1
+    fi
+    ;;
+esac
+
+released_at="$(date -u +%Y%m%dT%H%M%SZ)"
+mv "$claim_dir" "$run_dir/.claim.$released_at"
+
+task_tmp="$run_dir/task.json.tmp"
+jq --arg next_status "$next_status" '.status = $next_status' "$run_dir/task.json" > "$task_tmp"
+mv "$task_tmp" "$run_dir/task.json"
+
+printf '# Current\n\n- Owner: unassigned\n- Worktree: unassigned\n- Next action: %s\n- Blockers: see task/review evidence\n' \
+  "$next_status" > "$run_dir/current.md"
+printf 'release-ticket: %s released with status=%s; claim history preserved\n' "$issue_id" "$next_status"

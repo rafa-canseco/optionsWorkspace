@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness implementation handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issue_id", "repository", "status", "summary", "files_changed"],
+  "properties": {
+    "issue_id": { "type": "string" },
+    "repository": { "enum": ["frontend", "backend", "blockchain", "marketMaker"] },
+    "status": { "enum": ["pending", "implemented", "blocked"] },
+    "summary": { "type": "string" },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "known_issues": { "type": "array", "items": { "type": "string" } }
+  }
+}

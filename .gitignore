@@ -1,0 +1,33 @@
+.DS_Store
+.agents/
+.claude/
+.mcp.json
+.test-feedback
+.worktrees/
+skills-lock.json
+
+# Local agent memory. Durable outcomes belong in Linear, PRs, or docs/decisions.
+harness/runs/*
+!harness/runs/.gitignore
+
+# Secrets and machine-local configuration.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+**/settings.local.json
+**/*keypair*.json
+**/*secret*.json
+
+# Independent repositories managed by this workspace harness.
+frontend/
+backend/
+blockchain/
+marketMaker/
+playbook/
+arc/
+solana/
+b1nary-xlayer-hackathon/
+backend-b1n-*/

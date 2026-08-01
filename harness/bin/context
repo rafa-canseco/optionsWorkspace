@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
+repository="${1:-}"
+
+if [[ -z "$repository" ]]; then
+  printf 'usage: %s <frontend|backend|blockchain|marketMaker>\n' "$0" >&2
+  exit 2
+fi
+
+if ! jq -e --arg repository "$repository" '.repositories[$repository] != null' "$MANIFEST" >/dev/null; then
+  printf 'context: unknown repository: %s\n' "$repository" >&2
+  exit 2
+fi
+
+printf 'Context for %s (load in this order):\n' "$repository"
+while IFS= read -r context_path; do
+  if [[ ! -f "$WORKSPACE_ROOT/$context_path" ]]; then
+    printf '  MISSING %s\n' "$context_path" >&2
+    exit 1
+  fi
+  printf '  %s\n' "$context_path"
+done < <(jq -r --arg repository "$repository" '.repositories[$repository].context[]' "$MANIFEST")

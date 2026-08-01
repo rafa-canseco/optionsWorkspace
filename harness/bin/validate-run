@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+issue_id="${1:-}"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+  printf 'usage: %s <ISSUE-ID>\n' "$0" >&2
+  exit 2
+fi
+
+run_dir="$RUNS_ROOT/$issue_id"
+for artifact in task.json implementation.json review.json verification.json; do
+  if [[ ! -f "$run_dir/$artifact" ]] || ! jq empty "$run_dir/$artifact"; then
+    printf 'validate-run: missing or invalid JSON: %s/%s\n' "$issue_id" "$artifact" >&2
+    exit 1
+  fi
+done
+
+jq -e --arg issue_id "$issue_id" '
+  .issue_id == $issue_id and
+  (.objective | type == "string" and length > 0) and
+  (.acceptance_criteria | type == "array" and all(.[]; type == "string" and length > 0)) and
+  (.repositories | type == "array" and length == 1) and
+  (.repositories[0] | IN("frontend", "backend", "blockchain", "marketMaker")) and
+  (.dependencies | type == "array" and all(.[]; type == "string")) and
+  (.created_at | type == "string" and length > 0) and
+  (.status | IN("planned", "in_progress", "review", "blocked", "done"))
+' "$run_dir/task.json" >/dev/null || {
+  printf 'validate-run: invalid task packet: %s\n' "$issue_id" >&2
+  exit 1
+}
+
+repository="$(jq -r '.repositories[0]' "$run_dir/task.json")"
+for artifact in implementation.json review.json verification.json; do
+  jq -e --arg issue_id "$issue_id" --arg repository "$repository" \
+    '.issue_id == $issue_id and .repository == $repository' "$run_dir/$artifact" >/dev/null || {
+      printf 'validate-run: %s does not match task identity\n' "$artifact" >&2
+      exit 1
+    }
+done
+
+jq -e '
+  (.status | IN("pending", "implemented", "blocked")) and
+  (.summary | type == "string") and
+  (.files_changed | type == "array" and all(.[]; type == "string")) and
+  (.known_issues | type == "array" and all(.[]; type == "string"))
+' "$run_dir/implementation.json" >/dev/null
+jq -e '
+  (.verdict | IN("pending", "approved", "changes_requested", "blocked")) and
+  (.findings | type == "array" and all(.[];
+    type == "object" and
+    (.severity | IN("critical", "high", "medium", "low")) and
+    (.summary | type == "string" and length > 0) and
+    ((has("regression_test") | not) or (.regression_test | type == "string"))
+  ))
+' "$run_dir/review.json" >/dev/null
+jq -e '
+  (.tier | IN("fast", "full")) and
+  (.overall | IN("pending", "passed", "failed", "blocked")) and
+  (.commands | type == "array" and all(.[];
+    type == "object" and
+    (.command | type == "string" and length > 0) and
+    (.status | IN("pending", "passed", "failed", "blocked")) and
+    ((has("exit_code") | not) or (.exit_code | type == "number" and floor == .)) and
+    ((has("summary") | not) or (.summary | type == "string"))
+  ))
+' "$run_dir/verification.json" >/dev/null
+
+printf 'validate-run: %s passed\n' "$issue_id"

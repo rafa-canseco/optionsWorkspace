@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+
+repositories=("$WORKSPACE_ROOT" frontend backend blockchain marketMaker)
+credential_pattern="(PRIVATE_KEY|SECRET_KEY|API_KEY|MNEMONIC|SEED_PHRASE)[\"']?[[:space:]]*[:=][[:space:]]*([\"'][A-Za-z0-9_./+-]{24,}[\"']|(0x)?[A-Za-z0-9_+-]{24,})"
+failed=0
+
+current_git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$current_git_root" && "$current_git_root" != "$WORKSPACE_ROOT" ]]; then
+  repositories+=("$current_git_root")
+fi
+
+check_repository() {
+  local repository="$1"
+  local repository_path="$repository"
+
+  if [[ "$repository" != /* ]]; then
+    repository_path="$WORKSPACE_ROOT/$repository"
+  fi
+
+  if ! git -C "$repository_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return
+  fi
+
+  while IFS= read -r tracked_file; do
+    [[ -z "$tracked_file" ]] && continue
+    case "$tracked_file" in
+      .env.example|*/.env.example)
+        ;;
+      .mcp.json|*/.mcp.json|.env|.env.*|*/.env|*/.env.*|*settings.local.json|*.pem|*.key|*.p12|*.pfx|*keypair*.json|*keystore*.json|*wallet*.json|*secret*.json|broadcast/*|*/broadcast/*)
+        printf 'sensitive-check: forbidden tracked path in %s: %s\n' "$repository" "$tracked_file" >&2
+        failed=1
+        ;;
+    esac
+  done < <(git -C "$repository_path" ls-files)
+
+  while IFS= read -r staged_file; do
+    [[ -z "$staged_file" ]] && continue
+    case "$staged_file" in
+      .env.example|*/.env.example)
+        ;;
+      .mcp.json|*/.mcp.json|.env|.env.*|*/.env|*/.env.*|*settings.local.json|*.pem|*.key|*.p12|*.pfx|*keypair*.json|*keystore*.json|*wallet*.json|*secret*.json|broadcast/*|*/broadcast/*)
+        printf 'sensitive-check: forbidden staged path in %s: %s\n' "$repository" "$staged_file" >&2
+        failed=1
+        ;;
+    esac
+  done < <(git -C "$repository_path" diff --cached --name-only --diff-filter=ACMR)
+
+  while IFS= read -r matched_file; do
+    [[ -z "$matched_file" ]] && continue
+    case "$matched_file" in
+      .env.example|*/.env.example) ;;
+      *)
+        printf 'sensitive-check: possible high-entropy credential in tracked content for %s: %s\n' "$repository" "$matched_file" >&2
+        failed=1
+        ;;
+    esac
+  done < <(git -C "$repository_path" grep -I -l -i -E "$credential_pattern" -- . ':(exclude)*.lock' 2>/dev/null || true)
+
+  if git -C "$repository_path" diff --cached --no-ext-diff --unified=0 | \
+    rg '^\+[^+]' | rg -qi "$credential_pattern"; then
+    printf 'sensitive-check: possible high-entropy credential in staged content for %s\n' "$repository" >&2
+    failed=1
+  fi
+}
+
+for repository in "${repositories[@]}"; do
+  check_repository "$repository"
+done
+
+if (( failed != 0 )); then
+  printf 'sensitive-check: FAILED; nothing should be committed or pushed\n' >&2
+  exit 1
+fi
+
+printf 'sensitive-check: heuristic passed (tracked paths/content and staged additions)\n'

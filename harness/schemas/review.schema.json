@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness independent review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issue_id", "repository", "verdict", "findings"],
+  "properties": {
+    "issue_id": { "type": "string" },
+    "repository": { "enum": ["frontend", "backend", "blockchain", "marketMaker"] },
+    "verdict": { "enum": ["pending", "approved", "changes_requested", "blocked"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "summary"],
+        "properties": {
+          "severity": { "enum": ["critical", "high", "medium", "low"] },
+          "summary": { "type": "string" },
+          "regression_test": { "type": "string" }
+        }
+      }
+    }
+  }
+}

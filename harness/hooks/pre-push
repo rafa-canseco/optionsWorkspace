@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOOK_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+"$HOOK_DIR/../bin/sensitive-check"
+
+credential_pattern="(PRIVATE_KEY|SECRET_KEY|API_KEY|MNEMONIC|SEED_PHRASE)[\"']?[[:space:]]*[:=][[:space:]]*([\"'][A-Za-z0-9_./+-]{24,}[\"']|(0x)?[A-Za-z0-9_+-]{24,})"
+zero_sha='0000000000000000000000000000000000000000'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -z "${local_sha:-}" || "$local_sha" == "$zero_sha" ]] && continue
+
+  if [[ "$remote_sha" == "$zero_sha" ]]; then
+    commit_range=("$local_sha" --not --remotes)
+  else
+    commit_range=("$remote_sha..$local_sha")
+  fi
+
+  while IFS= read -r commit_sha; do
+    [[ -z "$commit_sha" ]] && continue
+
+    if git show --format= --no-ext-diff --unified=0 "$commit_sha" | rg '^\+[^+]' | rg -qi "$credential_pattern"; then
+      printf 'pre-push: possible credential found in outgoing commit %s; push blocked\n' "$commit_sha" >&2
+      exit 1
+    fi
+
+    while IFS= read -r changed_path; do
+      case "$changed_path" in
+        .env.example|*/.env.example) ;;
+        .mcp.json|*/.mcp.json|.env|.env.*|*/.env|*/.env.*|*settings.local.json|*.pem|*.key|*.p12|*.pfx|*keypair*.json|*keystore*.json|*wallet*.json|*secret*.json|broadcast/*|*/broadcast/*)
+          printf 'pre-push: forbidden sensitive path in outgoing commit %s: %s\n' "$commit_sha" "$changed_path" >&2
+          exit 1
+          ;;
+      esac
+    done < <(git diff-tree --no-commit-id --name-only -r "$commit_sha")
+  done < <(git rev-list "${commit_range[@]}")
+done

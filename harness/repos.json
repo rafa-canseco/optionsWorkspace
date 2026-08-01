@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "active_context": "docs/ACTIVE_CONTEXT.md",
+  "repositories": {
+    "frontend": {
+      "path": "frontend",
+      "base_branch": "staging",
+      "owner": "frontend",
+      "context": [
+        "docs/ACTIVE_CONTEXT.md",
+        "docs/v2/V2_OPERATING_CONTEXT.md",
+        "docs/architecture/REPO_MAP.md",
+        "frontend/AGENTS.md"
+      ],
+      "checks": {
+        "fast": ["bun", "run", "check:fast"],
+        "full": ["bun", "run", "check:full"]
+      }
+    },
+    "backend": {
+      "path": "backend",
+      "base_branch": "staging",
+      "owner": "backend",
+      "context": [
+        "docs/ACTIVE_CONTEXT.md",
+        "docs/v2/V2_OPERATING_CONTEXT.md",
+        "docs/architecture/REPO_MAP.md",
+        "backend/AGENTS.md"
+      ],
+      "checks": {
+        "fast": ["./scripts/harness-check.sh", "fast"],
+        "full": ["./scripts/harness-check.sh", "full"]
+      }
+    },
+    "blockchain": {
+      "path": "blockchain",
+      "base_branch": "staging",
+      "owner": "contracts",
+      "context": [
+        "docs/ACTIVE_CONTEXT.md",
+        "docs/v2/V2_OPERATING_CONTEXT.md",
+        "docs/architecture/REPO_MAP.md",
+        "blockchain/AGENTS.md"
+      ],
+      "checks": {
+        "fast": ["./scripts/harness-check.sh", "fast"],
+        "full": ["./scripts/harness-check.sh", "full"]
+      }
+    },
+    "marketMaker": {
+      "path": "marketMaker",
+      "base_branch": "staging",
+      "owner": "market-maker",
+      "context": [
+        "docs/ACTIVE_CONTEXT.md",
+        "docs/v2/V2_OPERATING_CONTEXT.md",
+        "docs/architecture/REPO_MAP.md",
+        "marketMaker/AGENTS.md"
+      ],
+      "checks": {
+        "fast": ["./scripts/harness-check.sh", "fast"],
+        "full": ["./scripts/harness-check.sh", "full"]
+      }
+    }
+  }
+}

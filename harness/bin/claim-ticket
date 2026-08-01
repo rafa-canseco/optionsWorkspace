@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+issue_id="${1:-}"
+owner="${2:-}"
+worktree="${3:-}"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ || -z "$owner" || -z "$worktree" ]]; then
+  printf 'usage: %s <ISSUE-ID> <owner> <worktree>\n' "$0" >&2
+  exit 2
+fi
+
+run_dir="$RUNS_ROOT/$issue_id"
+claim_dir="$run_dir/.claim"
+if [[ ! -f "$run_dir/task.json" ]]; then
+  printf 'claim-ticket: start the ticket first: %s\n' "$issue_id" >&2
+  exit 1
+fi
+
+"$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+
+if ! jq -e '
+  (.acceptance_criteria | length > 0) and
+  (.status | IN("planned", "review", "blocked"))
+' "$run_dir/task.json" >/dev/null; then
+  printf 'claim-ticket: requires acceptance criteria and a claimable task status\n' >&2
+  exit 1
+fi
+
+# mkdir is the cross-agent atomic ownership operation.
+if ! mkdir "$claim_dir" 2>/dev/null; then
+  printf 'claim-ticket: ticket already claimed: %s\n' "$issue_id" >&2
+  if [[ -f "$claim_dir/owner.json" ]]; then
+    jq '{owner, worktree, claimed_at}' "$claim_dir/owner.json" >&2
+  fi
+  exit 1
+fi
+
+claimed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+jq -n \
+  --arg owner "$owner" \
+  --arg worktree "$worktree" \
+  --arg claimed_at "$claimed_at" \
+  '{owner: $owner, worktree: $worktree, claimed_at: $claimed_at}' \
+  > "$claim_dir/owner.json"
+
+task_tmp="$run_dir/task.json.tmp"
+jq '.status = "in_progress"' "$run_dir/task.json" > "$task_tmp"
+mv "$task_tmp" "$run_dir/task.json"
+
+printf '# Current\n\n- Owner: %s\n- Worktree: %s\n- Next action: execute the approved plan\n- Blockers: none recorded\n' \
+  "$owner" "$worktree" > "$run_dir/current.md"
+printf 'claim-ticket: %s claimed by %s in %s\n' "$issue_id" "$owner" "$worktree"

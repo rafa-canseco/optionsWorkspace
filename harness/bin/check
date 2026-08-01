@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
+repository="${1:-}"
+tier="${2:-fast}"
+
+if [[ -z "$repository" || ( "$tier" != "fast" && "$tier" != "full" ) ]]; then
+  printf 'usage: %s <frontend|backend|blockchain|marketMaker|all> [fast|full]\n' "$0" >&2
+  exit 2
+fi
+
+run_one() {
+  local target="$1"
+  local repository_path
+  local command_argument
+  local command_arguments=()
+
+  if ! jq -e --arg target "$target" '.repositories[$target] != null' "$MANIFEST" >/dev/null; then
+    printf 'check: unknown repository: %s\n' "$target" >&2
+    return 2
+  fi
+
+  repository_path="$(jq -r --arg target "$target" '.repositories[$target].path' "$MANIFEST")"
+  while IFS= read -r command_argument; do
+    command_arguments+=("$command_argument")
+  done < <(jq -r --arg target "$target" --arg tier "$tier" '.repositories[$target].checks[$tier][]' "$MANIFEST")
+
+  if (( ${#command_arguments[@]} == 0 )); then
+    printf 'check: no command configured for repository=%s tier=%s\n' "$target" "$tier" >&2
+    return 2
+  fi
+
+  printf '\ncheck: repository=%s tier=%s\n' "$target" "$tier"
+  (cd "$WORKSPACE_ROOT/$repository_path" && "${command_arguments[@]}")
+}
+
+"$SCRIPT_DIR/sensitive-check"
+
+if [[ "$repository" != "all" ]]; then
+  run_one "$repository"
+  exit
+fi
+
+failed=0
+for target in frontend backend blockchain marketMaker; do
+  if ! run_one "$target"; then
+    failed=1
+  fi
+done
+
+if (( failed != 0 )); then
+  printf 'check: one or more repositories failed\n' >&2
+  exit 1
+fi
