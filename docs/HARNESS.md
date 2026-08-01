@@ -54,12 +54,15 @@ and leave unrelated working-tree changes untouched.
 
 The verified feature branch is then pushed and a draft PR is opened automatically.
 Product PRs target `staging`; the workspace-harness repository targets `main`. The
-PR receives the verification summary and Linear moves to Review. A failed or
-incomplete ticket remains uncommitted in its isolated worktree with its state under
+PR receives the verification summary plus a closing reference such as
+`Fixes B1N-123`, and Linear moves to Review. A failed or incomplete ticket remains
+uncommitted in its isolated worktree with its state under
 `harness/runs/<ISSUE-ID>/`.
 
-Merge, deployment, release publication, production changes, and moving Linear to
-Done still require an explicit user request.
+Merge, deployment, release publication, and production changes still require an
+explicit user request. Once an authorized merge lands on the configured integration
+branch, the native GitHub–Linear automation moves the linked issue to Done. Agents
+must not close it early or require a second user instruction after merge.
 
 ## Verification
 
