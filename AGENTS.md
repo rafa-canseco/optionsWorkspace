@@ -102,11 +102,15 @@ Linear. Promote architectural decisions to `docs/decisions/`.
   the Linear ID and stage only the files owned by that ticket.
 - Push the verified feature branch and open a draft PR by default. Product PRs target
   the repository's `staging` branch; workspace-harness PRs target `main`. Add the
-  verification evidence to the PR and move the Linear issue to Review.
+  verification evidence and a closing reference such as `Fixes B1N-123` to the PR,
+  then move the Linear issue to Review.
+- Do not manually move a linked issue to Done before merge. The GitHub–Linear
+  integration owns that transition and closes the issue automatically after its PR
+  is merged to the configured integration branch.
 - Never commit a red or incomplete handoff merely to preserve progress. Keep partial
   work in its ticket worktree and external-memory run instead.
-- Do not merge, deploy, publish a release, mark Linear Done, or otherwise update
-  production/external runtime state unless the user explicitly requests it.
+- Do not merge, deploy, publish a release, or otherwise update production/external
+  runtime state unless the user explicitly requests it.
 - Never push directly to `main`, `dev`, or `staging`; use feature branches.
 - V2 feature branches and PRs use `staging`, not historical `dev`.
 - Preserve unrelated dirty-worktree changes. Do not reset, delete, or overwrite
