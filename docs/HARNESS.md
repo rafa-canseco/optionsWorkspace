@@ -45,16 +45,21 @@ approved independent review, and passing full verification.
 Do not parallelize downstream consumers until their ABI, event, schema, or API
 contract is stable. Never allow agents to share a branch or edit overlapping files.
 
-## Local Commit Policy
+## Delivery Policy
 
 An approved ticket is committed locally by default after full verification and the
 sensitive-data check pass. The commit must live on the ticket's feature branch,
 contain only that ticket's files, use a conventional message with the Linear ID,
 and leave unrelated working-tree changes untouched.
 
-Pushes, pull requests, merges, deployments, and other external updates still require
-an explicit user request. A failed or incomplete ticket remains uncommitted in its
-isolated worktree with its state recorded under `harness/runs/<ISSUE-ID>/`.
+The verified feature branch is then pushed and a draft PR is opened automatically.
+Product PRs target `staging`; the workspace-harness repository targets `main`. The
+PR receives the verification summary and Linear moves to Review. A failed or
+incomplete ticket remains uncommitted in its isolated worktree with its state under
+`harness/runs/<ISSUE-ID>/`.
+
+Merge, deployment, release publication, production changes, and moving Linear to
+Done still require an explicit user request.
 
 ## Verification
 
