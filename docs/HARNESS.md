@@ -45,6 +45,17 @@ approved independent review, and passing full verification.
 Do not parallelize downstream consumers until their ABI, event, schema, or API
 contract is stable. Never allow agents to share a branch or edit overlapping files.
 
+## Local Commit Policy
+
+An approved ticket is committed locally by default after full verification and the
+sensitive-data check pass. The commit must live on the ticket's feature branch,
+contain only that ticket's files, use a conventional message with the Linear ID,
+and leave unrelated working-tree changes untouched.
+
+Pushes, pull requests, merges, deployments, and other external updates still require
+an explicit user request. A failed or incomplete ticket remains uncommitted in its
+isolated worktree with its state recorded under `harness/runs/<ISSUE-ID>/`.
+
 ## Verification
 
 - `fast`: deterministic, offline feedback used while coding.
