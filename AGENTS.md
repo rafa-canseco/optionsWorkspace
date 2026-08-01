@@ -97,7 +97,16 @@ Linear. Promote architectural decisions to `docs/decisions/`.
 - Never stage, commit, print, summarize, or push secrets, private keys, seed phrases,
   API tokens, `.env` files, `.mcp.json`, or `settings.local.json`.
 - Run `harness/bin/sensitive-check` before any commit or push.
-- Do not commit or push unless the user explicitly requests it.
+- After required verification passes and the independent review is approved, create
+  a local ticket-scoped commit by default. Use a conventional message containing
+  the Linear ID and stage only the files owned by that ticket.
+- Push the verified feature branch and open a draft PR by default. Product PRs target
+  the repository's `staging` branch; workspace-harness PRs target `main`. Add the
+  verification evidence to the PR and move the Linear issue to Review.
+- Never commit a red or incomplete handoff merely to preserve progress. Keep partial
+  work in its ticket worktree and external-memory run instead.
+- Do not merge, deploy, publish a release, mark Linear Done, or otherwise update
+  production/external runtime state unless the user explicitly requests it.
 - Never push directly to `main`, `dev`, or `staging`; use feature branches.
 - V2 feature branches and PRs use `staging`, not historical `dev`.
 - Preserve unrelated dirty-worktree changes. Do not reset, delete, or overwrite
