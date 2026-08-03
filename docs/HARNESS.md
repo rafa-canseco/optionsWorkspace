@@ -85,7 +85,18 @@ Run `sensitive-check` before commits and pushes. It is a conservative heuristic,
 not a substitute for provider-side secret scanning. The script reports filenames or
 a generic content warning and never prints matched secret values.
 
+Credential-like assignments are classified by literal shape. Callable and
+identifier right-hand sides are allowed, while quoted, hexadecimal,
+provider-prefixed, and high-entropy literals are blocked. Reports include only the
+path and finding category; candidate values are never printed.
+
 `install-hooks` configures the meta-repository and the four active repositories to
 run the same check before commits and pushes. Re-run it after cloning the workspace.
 The pre-push hook also scans outgoing commit diffs, so a secret cannot bypass the
 gate merely because it is no longer staged or was removed in a later local commit.
+
+Run the deterministic scanner regression suite with:
+
+```bash
+harness/tests/test-sensitive-scanner.sh
+```
