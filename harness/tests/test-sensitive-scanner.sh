@@ -133,10 +133,10 @@ classifier_report="$fixture_root/classifier-report.txt"
 if python3 -B "$CLASSIFIER" < "$quoted_fixture" > /dev/null 2> "$classifier_report"; then
   fail "classifier report should return a blocked status"
 fi
-if ! rg -q 'category=quoted-literal' "$classifier_report"; then
+if ! grep -q -- 'category=quoted-literal' "$classifier_report"; then
   fail "classifier report should include only the finding category"
 fi
-if rg -F -q "$quoted_value" "$classifier_report"; then
+if grep -F -q -- "$quoted_value" "$classifier_report"; then
   fail "classifier report must redact candidate values"
 fi
 
@@ -144,7 +144,7 @@ assert_report_redacted() {
   local report="$1"
   local candidate
   for candidate in "$quoted_value" "$hex_value" "$provider_value" "$entropy_value"; do
-    if rg -F -q "$candidate" "$report"; then
+    if grep -F -q -- "$candidate" "$report"; then
       fail "scanner report must redact all candidate values"
     fi
   done
@@ -177,7 +177,7 @@ staged_report="$fixture_root/staged-report.txt"
 if "$staged_repository/harness/bin/sensitive-check" > /dev/null 2> "$staged_report"; then
   fail "staged credential literals should be blocked"
 fi
-if ! rg -q 'credential literal in staged content' "$staged_report"; then
+if ! grep -q -- 'credential literal in staged content' "$staged_report"; then
   fail "staged additions should be classified explicitly"
 fi
 assert_report_redacted "$staged_report"
@@ -191,7 +191,7 @@ tracked_report="$fixture_root/tracked-report.txt"
 if "$tracked_repository/harness/bin/sensitive-check" > /dev/null 2> "$tracked_report"; then
   fail "tracked multi-assignment and composite literals should be blocked"
 fi
-if ! rg -q 'credential literal in tracked content' "$tracked_report"; then
+if ! grep -q -- 'credential literal in tracked content' "$tracked_report"; then
   fail "tracked content should be classified explicitly"
 fi
 assert_report_redacted "$tracked_report"
@@ -227,7 +227,7 @@ if printf 'refs/heads/main %s refs/heads/main %s\n' "$sensitive_sha" "$zero_sha"
   (cd "$outgoing_repository" && harness/hooks/pre-push) > /dev/null 2> "$outgoing_report"; then
   fail "credential literals in outgoing commits should be blocked"
 fi
-if ! rg -q 'credential literal found in outgoing commit' "$outgoing_report"; then
+if ! grep -q -- 'credential literal found in outgoing commit' "$outgoing_report"; then
   fail "outgoing additions should be classified explicitly"
 fi
 assert_report_redacted "$outgoing_report"
