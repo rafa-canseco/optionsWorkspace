@@ -3,10 +3,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+CLASSIFIER="$WORKSPACE_ROOT/harness/lib/sensitive_classifier.py"
 
 repositories=("$WORKSPACE_ROOT" frontend backend blockchain marketMaker)
-credential_pattern="(PRIVATE_KEY|SECRET_KEY|API_KEY|MNEMONIC|SEED_PHRASE)[\"']?[[:space:]]*[:=][[:space:]]*([\"'][A-Za-z0-9_./+-]{24,}[\"']|(0x)?[A-Za-z0-9_+-]{24,})"
+credential_key_pattern="(PRIVATE_KEY|SECRET_KEY|API_KEY|MNEMONIC|SEED_PHRASE)[\"']?[[:space:]]*[:=]"
 failed=0
+
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'sensitive-check: missing required command: python3\n' >&2
+  exit 1
+fi
+
+if [[ ! -f "$CLASSIFIER" ]]; then
+  printf 'sensitive-check: missing classifier\n' >&2
+  exit 1
+fi
 
 current_git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -n "$current_git_root" && "$current_git_root" != "$WORKSPACE_ROOT" ]]; then
@@ -25,7 +36,7 @@ check_repository() {
     return
   fi
 
-  while IFS= read -r tracked_file; do
+  while IFS= read -r -d '' tracked_file; do
     [[ -z "$tracked_file" ]] && continue
     case "$tracked_file" in
       .env.example|*/.env.example)
@@ -35,9 +46,9 @@ check_repository() {
         failed=1
         ;;
     esac
-  done < <(git -C "$repository_path" ls-files)
+  done < <(git -C "$repository_path" ls-files -z)
 
-  while IFS= read -r staged_file; do
+  while IFS= read -r -d '' staged_file; do
     [[ -z "$staged_file" ]] && continue
     case "$staged_file" in
       .env.example|*/.env.example)
@@ -47,22 +58,32 @@ check_repository() {
         failed=1
         ;;
     esac
-  done < <(git -C "$repository_path" diff --cached --name-only --diff-filter=ACMR)
+  done < <(git -C "$repository_path" diff --cached --name-only --diff-filter=ACMR -z)
 
-  while IFS= read -r matched_file; do
-    [[ -z "$matched_file" ]] && continue
-    case "$matched_file" in
-      .env.example|*/.env.example) ;;
+  while IFS= read -r -d '' tracked_file; do
+    [[ -z "$tracked_file" ]] && continue
+    case "$tracked_file" in
+      .env.example|*/.env.example|*.lock) ;;
       *)
-        printf 'sensitive-check: possible high-entropy credential in tracked content for %s: %s\n' "$repository" "$matched_file" >&2
+        if [[ ! -f "$repository_path/$tracked_file" || -L "$repository_path/$tracked_file" ]]; then
+          continue
+        fi
+        if python3 -B "$CLASSIFIER" --quiet < "$repository_path/$tracked_file"; then
+          continue
+        fi
+        printf 'sensitive-check: possible credential literal in tracked content for %s: %s\n' "$repository" "$tracked_file" >&2
         failed=1
         ;;
     esac
-  done < <(git -C "$repository_path" grep -I -l -i -E "$credential_pattern" -- . ':(exclude)*.lock' 2>/dev/null || true)
+  done < <(
+    git -C "$repository_path" grep -I -l -z -i -E "$credential_key_pattern" \
+      -- . ':(exclude)*.lock' 2>/dev/null || true
+  )
 
-  if git -C "$repository_path" diff --cached --no-ext-diff --unified=0 | \
-    rg '^\+[^+]' | rg -qi "$credential_pattern"; then
-    printf 'sensitive-check: possible high-entropy credential in staged content for %s\n' "$repository" >&2
+  if ! git -C "$repository_path" diff --cached --no-ext-diff --unified=0 --no-color | \
+    awk 'substr($0, 1, 1) == "+" && substr($0, 1, 3) != "+++" { print substr($0, 2) }' | \
+    python3 -B "$CLASSIFIER" --quiet; then
+    printf 'sensitive-check: possible credential literal in staged content for %s\n' "$repository" >&2
     failed=1
   fi
 }

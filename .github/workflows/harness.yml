@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate shell entrypoints
         run: bash -n harness/bin/* harness/hooks/*
+      - name: Test sensitive scanner
+        run: harness/tests/test-sensitive-scanner.sh
       - name: Validate manifests and schemas
         run: jq empty harness/repos.json harness/schemas/*.json
       - name: Smoke-test task lifecycle
