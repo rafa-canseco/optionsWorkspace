@@ -20,6 +20,7 @@ these rules.
 
 | Repository | Directory | Owner |
 |---|---|---|
+| Workspace harness | `.` | workspace instance |
 | Frontend | `frontend/` | frontend instance |
 | Backend | `backend/` | backend instance |
 | Contracts | `blockchain/` | contracts instance |
@@ -81,11 +82,15 @@ Linear. Promote architectural decisions to `docs/decisions/`.
 ## Verification Protocol
 
 - Run `harness/bin/check <repository> fast` during implementation.
-- Run `harness/bin/check <repository> full` before review is approved.
+- Run `harness/bin/check <repository> full` on the uncommitted candidate before
+  creating its ticket-scoped commit and before review is approved. After that commit,
+  the release gate reruns the canonical full command and binds evidence to its SHA.
 - `fast` must be deterministic and offline. `full` may require explicitly declared
   integration services or pinned fork RPC configuration.
-- Never mark a task done solely from an agent's written claim. `verification.json`
-  must contain the commands and results.
+- Never mark a task done solely from an agent's written claim. Local
+  `verification.json` is deterministic commit-bound evidence for both the claimed
+  repository and committed harness control plane; the required GitHub status check
+  is the authoritative CI result.
 - Contract, custody, settlement, signature, upgrade, and deployment changes require
   an independent defensive security review plus appropriate fuzz, invariant,
   storage, and fork evidence.
@@ -97,9 +102,11 @@ Linear. Promote architectural decisions to `docs/decisions/`.
 - Never stage, commit, print, summarize, or push secrets, private keys, seed phrases,
   API tokens, `.env` files, `.mcp.json`, or `settings.local.json`.
 - Run `harness/bin/sensitive-check` before any commit or push.
-- After required verification passes and the independent review is approved, create
-  a local ticket-scoped commit by default. Use a conventional message containing
-  the Linear ID and stage only the files owned by that ticket.
+- After the unrecorded full check passes and an independent reviewer has inspected
+  the candidate diff, create a local ticket-scoped candidate commit. Then record the
+  implementation, let the release gate rerun full verification at that SHA, and bind
+  the reviewer attestation to the unchanged commit before delivery. Use a conventional
+  message containing the Linear ID and stage only the files owned by that ticket.
 - Push the verified feature branch and open a draft PR by default. Product PRs target
   the repository's `staging` branch; workspace-harness PRs target `main`. Add the
   verification evidence and a closing reference such as `Fixes B1N-123` to the PR,

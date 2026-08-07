@@ -3,7 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
 RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+# shellcheck source=../lib/repository-state.sh
+source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
 issue_id="${1:-}"
 next_status="${2:-review}"
 
@@ -21,34 +24,174 @@ esac
 
 run_dir="$RUNS_ROOT/$issue_id"
 claim_dir="$run_dir/.claim"
-if [[ ! -f "$claim_dir/owner.json" ]]; then
-  printf 'release-ticket: no active claim for %s\n' "$issue_id" >&2
+if [[ ! -f "$claim_dir/owner.json" || ! -f "$run_dir/task.json" ]]; then
+  printf 'release-ticket: active claim and task required for %s\n' "$issue_id" >&2
   exit 1
+fi
+repository="$(jq -r '.repositories[0] // empty' "$run_dir/task.json")"
+if ! jq -e --arg issue_id "$issue_id" --arg repository "$repository" '
+  .issue_id == $issue_id and .repositories == [$repository]
+' "$run_dir/task.json" >/dev/null ||
+   ! jq -e --arg repository "$repository" '.repositories[$repository] != null' "$MANIFEST" >/dev/null; then
+  printf 'release-ticket: invalid task repository identity\n' >&2
+  exit 1
+fi
+
+# A mutable JSON assertion is never the release authority. Re-run the canonical
+# full check at the claimed commit and atomically replace verification evidence.
+if [[ "$next_status" == "review" || "$next_status" == "done" ]]; then
+  if ! "$SCRIPT_DIR/check" "$repository" full --record "$issue_id"; then
+    printf 'release-ticket: canonical full verification failed; transition blocked\n' >&2
+    exit 1
+  fi
 fi
 
 "$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
 
+claim_worktree() {
+  local worktree_input
+  worktree_input="$(jq -r '.worktree // empty' "$claim_dir/owner.json")"
+  validate_claimed_repository "$repository" "$worktree_input" "$issue_id"
+}
+
+verification_is_current_and_canonical() {
+  local required_tier="${1:-}"
+  local worktree head evidence_tier expected_command control_identity control_commit_sha manifest_blob_sha
+  worktree="$(claim_worktree)" || return
+  require_clean_commit "$worktree" || return
+  control_identity="$(control_plane_identity "$repository" "$worktree")" || {
+    printf 'release-ticket: harness control plane is not commit-bound\n' >&2
+    return 1
+  }
+  if [[ "$control_identity" != *$'\n'* ]]; then
+    printf 'release-ticket: invalid harness control-plane identity\n' >&2
+    return 1
+  fi
+  control_commit_sha="${control_identity%%$'\n'*}"
+  manifest_blob_sha="${control_identity#*$'\n'}"
+  if [[ -z "$control_commit_sha" || -z "$manifest_blob_sha" || "$manifest_blob_sha" == *$'\n'* ]]; then
+    printf 'release-ticket: invalid harness control-plane identity\n' >&2
+    return 1
+  fi
+  head="$(git -C "$worktree" rev-parse HEAD)"
+  evidence_tier="$(jq -r '.tier' "$run_dir/verification.json")"
+  if [[ -n "$required_tier" && "$evidence_tier" != "$required_tier" ]]; then
+    printf 'release-ticket: verification tier must be %s\n' "$required_tier" >&2
+    return 1
+  fi
+  expected_command="$(jq -c --arg repository "$repository" --arg tier "$evidence_tier" \
+    '.repositories[$repository].checks[$tier]' "$MANIFEST")"
+  if [[ "$expected_command" == "null" ]]; then
+    printf 'release-ticket: no canonical command for repository=%s tier=%s\n' "$repository" "$evidence_tier" >&2
+    return 1
+  fi
+  if ! jq -e \
+    --arg issue_id "$issue_id" \
+    --arg repository "$repository" \
+    --arg tier "$evidence_tier" \
+    --arg head "$head" \
+    --arg control_commit_sha "$control_commit_sha" \
+    --arg manifest_blob_sha "$manifest_blob_sha" \
+    --argjson expected_command "$expected_command" '
+      .issue_id == $issue_id and
+      .repository == $repository and
+      .tier == $tier and
+      .overall == "passed" and
+      .commit_sha == $head and
+      .control_plane.commit_sha == $control_commit_sha and
+      .control_plane.manifest_blob_sha == $manifest_blob_sha and
+      .check_command.command == "harness/bin/check" and
+      .check_command.arguments == [$repository, $tier, "--record", $issue_id] and
+      (.commands | length == 1) and
+      ([.commands[0].command] + .commands[0].arguments) == $expected_command and
+      .commands[0].commit_sha == $head and
+      .commands[0].exit_code == 0 and
+      .commands[0].status == "passed"
+    ' "$run_dir/verification.json" >/dev/null; then
+    printf 'release-ticket: verification is stale, mismatched, or non-canonical\n' >&2
+    return 1
+  fi
+}
+
+implementation_matches_claim() {
+  local claim_owner implementer worktree head implementation_commit
+  claim_owner="$(jq -r '.owner // empty' "$claim_dir/owner.json")"
+  implementer="$(jq -r '.implementer // empty' "$run_dir/implementation.json")"
+  implementation_commit="$(jq -r '.commit_sha // empty' "$run_dir/implementation.json")"
+  worktree="$(claim_worktree)" || return
+  head="$(git -C "$worktree" rev-parse HEAD)"
+  if [[ -z "$claim_owner" || "$implementer" != "$claim_owner" || "$implementation_commit" != "$head" ]]; then
+    printf 'release-ticket: implementation owner and commit must match the active claim\n' >&2
+    return 1
+  fi
+}
+
+recorded_implementer() {
+  local candidate=""
+  local owner_file
+  shopt -s nullglob
+  for owner_file in "$run_dir"/.claim.*.review*/owner.json; do
+    candidate="$owner_file"
+  done
+  shopt -u nullglob
+  if [[ -z "$candidate" ]]; then
+    printf 'release-ticket: implementation claim history is missing\n' >&2
+    return 1
+  fi
+  jq -r '.owner // empty' "$candidate"
+}
+
+review_is_current_and_independent() {
+  local worktree head claim_owner implementer implementation_commit recorded_owner
+  worktree="$(claim_worktree)" || return
+  head="$(git -C "$worktree" rev-parse HEAD)"
+  claim_owner="$(jq -r '.owner // empty' "$claim_dir/owner.json")"
+  implementer="$(jq -r '.implementer // empty' "$run_dir/implementation.json")"
+  implementation_commit="$(jq -r '.commit_sha // empty' "$run_dir/implementation.json")"
+  recorded_owner="$(recorded_implementer)" || return
+  if [[ -z "$claim_owner" || -z "$recorded_owner" || "$implementer" != "$recorded_owner" || "$implementation_commit" != "$head" || "$claim_owner" == "$recorded_owner" ]]; then
+    printf 'release-ticket: approved review must use a different recorded owner label\n' >&2
+    return 1
+  fi
+  if ! jq -e --arg reviewer "$claim_owner" --arg head "$head" '
+    .verdict == "approved" and
+    .reviewer == $reviewer and
+    .reviewed_commit == $head and
+    (.reviewed_at | type == "string" and length > 0)
+  ' "$run_dir/review.json" >/dev/null; then
+    printf 'release-ticket: approved review must identify the current reviewer label and commit\n' >&2
+    return 1
+  fi
+}
+
 case "$next_status" in
   review)
     if ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
-       ! jq -e '.overall == "passed"' "$run_dir/verification.json" >/dev/null; then
-      printf 'release-ticket: review requires implemented handoff and passing verification\n' >&2
+       ! implementation_matches_claim ||
+       ! verification_is_current_and_canonical full; then
+      printf 'release-ticket: review requires implemented handoff and current canonical full verification\n' >&2
       exit 1
     fi
     ;;
   done)
     if ! jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null ||
        ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
-       ! jq -e '.verdict == "approved"' "$run_dir/review.json" >/dev/null ||
-       ! jq -e '.tier == "full" and .overall == "passed"' "$run_dir/verification.json" >/dev/null; then
-      printf 'release-ticket: done requires acceptance criteria, implementation, approved review, and passing full verification\n' >&2
+       ! verification_is_current_and_canonical full ||
+       ! review_is_current_and_independent; then
+      printf 'release-ticket: done requires acceptance criteria, implementation, current canonical full verification, and reviewer attestation\n' >&2
       exit 1
     fi
     ;;
 esac
 
 released_at="$(date -u +%Y%m%dT%H%M%SZ)"
-mv "$claim_dir" "$run_dir/.claim.$released_at"
+claim_history="$run_dir/.claim.$released_at.$next_status"
+claim_suffix=0
+while [[ -e "$claim_history" ]]; do
+  claim_suffix=$((claim_suffix + 1))
+  claim_history="$run_dir/.claim.$released_at.$next_status.$claim_suffix"
+done
+mv "$claim_dir" "$claim_history"
 
 task_tmp="$run_dir/task.json.tmp"
 jq --arg next_status "$next_status" '.status = $next_status' "$run_dir/task.json" > "$task_tmp"

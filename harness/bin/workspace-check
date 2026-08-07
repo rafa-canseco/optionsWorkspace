@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+tier="${1:-fast}"
+
+if [[ "$tier" != "fast" && "$tier" != "full" ]]; then
+  printf 'usage: %s <fast|full>\n' "$0" >&2
+  exit 2
+fi
+
+cd "$WORKSPACE_ROOT"
+printf 'workspace-check: shell syntax\n'
+bash -n harness/bin/* harness/hooks/* harness/lib/*.sh harness/tests/*.sh
+printf 'workspace-check: JSON manifests and schemas\n'
+jq empty harness/repos.json harness/schemas/*.json
+printf 'workspace-check: deterministic lifecycle suite\n'
+harness/tests/lifecycle.sh
+printf 'workspace-check: sensitive data heuristic\n'
+harness/bin/sensitive-check
+
+if [[ "$tier" == "full" ]]; then
+  printf 'workspace-check: workspace-only doctor\n'
+  harness/bin/doctor workspace
+fi
+
+printf 'workspace-check: %s passed\n' "$tier"

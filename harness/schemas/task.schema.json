@@ -22,8 +22,9 @@
     "repositories": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 1,
       "uniqueItems": true,
-      "items": { "enum": ["frontend", "backend", "blockchain", "marketMaker"] }
+      "items": { "enum": ["workspace", "frontend", "backend", "blockchain", "marketMaker"] }
     },
     "dependencies": {
       "type": "array",

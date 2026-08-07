@@ -3,13 +3,22 @@
   "title": "Harness implementation handoff",
   "type": "object",
   "additionalProperties": false,
-  "required": ["issue_id", "repository", "status", "summary", "files_changed"],
+  "required": ["issue_id", "repository", "status", "summary", "files_changed", "known_issues"],
   "properties": {
     "issue_id": { "type": "string" },
-    "repository": { "enum": ["frontend", "backend", "blockchain", "marketMaker"] },
+    "repository": { "enum": ["workspace", "frontend", "backend", "blockchain", "marketMaker"] },
     "status": { "enum": ["pending", "implemented", "blocked"] },
     "summary": { "type": "string" },
     "files_changed": { "type": "array", "items": { "type": "string" } },
-    "known_issues": { "type": "array", "items": { "type": "string" } }
-  }
+    "known_issues": { "type": "array", "items": { "type": "string" } },
+    "implementer": { "type": "string", "minLength": 1 },
+    "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "recorded_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "implemented" } }, "required": ["status"] },
+      "then": { "required": ["implementer", "commit_sha", "recorded_at"] }
+    }
+  ]
 }
