@@ -63,6 +63,16 @@ Never hide a red baseline.
 - A fresh reviewer reads the task packet, diff, durable decisions, and verification
   evidence. It should not inherit an implementer's full conversation.
 
+<pi-intercom>
+Coordinate with other local pi sessions on related codebases. Use `/skill:pi-intercom` for patterns.
+
+**When:** Same codebase (parallel work), reference codebase (consulting patterns), related repos (shared libraries).
+
+**Not when:** Unrelated codebases, trivial questions, or when you can proceed independently.
+
+**Principle:** Prefer `send` for notifications; `ask` only when blocked waiting for input.
+</pi-intercom>
+
 ## External Memory Protocol
 
 Each active ticket uses `harness/runs/<ISSUE-ID>/`:
