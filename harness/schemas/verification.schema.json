@@ -6,22 +6,71 @@
   "required": ["issue_id", "repository", "tier", "overall", "commands"],
   "properties": {
     "issue_id": { "type": "string" },
-    "repository": { "enum": ["frontend", "backend", "blockchain", "marketMaker"] },
+    "repository": { "enum": ["workspace", "frontend", "backend", "blockchain", "marketMaker"] },
     "tier": { "enum": ["fast", "full"] },
+    "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": "string", "format": "date-time" },
+    "duration_seconds": { "type": "integer", "minimum": 0 },
+    "control_plane": { "$ref": "#/$defs/controlPlane" },
+    "check_command": { "$ref": "#/$defs/commandInvocation" },
     "overall": { "enum": ["pending", "passed", "failed", "blocked"] },
     "commands": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["command", "status"],
+        "required": [
+          "command",
+          "arguments",
+          "started_at",
+          "ended_at",
+          "duration_seconds",
+          "commit_sha",
+          "exit_code",
+          "status"
+        ],
         "properties": {
-          "command": { "type": "string" },
-          "status": { "enum": ["pending", "passed", "failed", "blocked"] },
+          "command": { "type": "string", "minLength": 1 },
+          "arguments": { "type": "array", "items": { "type": "string" } },
+          "started_at": { "type": "string", "format": "date-time" },
+          "ended_at": { "type": "string", "format": "date-time" },
+          "duration_seconds": { "type": "integer", "minimum": 0 },
+          "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
           "exit_code": { "type": "integer" },
-          "summary": { "type": "string" }
+          "status": { "enum": ["passed", "failed"] }
         }
       }
     }
-  }
+  },
+  "$defs": {
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_sha", "manifest_blob_sha"],
+      "properties": {
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "manifest_blob_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+      }
+    },
+    "commandInvocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "arguments"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "overall": { "enum": ["passed", "failed"] } }, "required": ["overall"] },
+      "then": {
+        "required": ["commit_sha", "started_at", "ended_at", "duration_seconds", "control_plane", "check_command"],
+        "properties": { "commands": { "minItems": 1 } }
+      },
+      "else": { "properties": { "commands": { "maxItems": 0 } } }
+    }
+  ]
 }

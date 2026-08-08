@@ -4,6 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 
+for required_command in git rg; do
+  if ! command -v "$required_command" >/dev/null 2>&1; then
+    printf 'sensitive-check: missing required command: %s\n' "$required_command" >&2
+    exit 2
+  fi
+done
+
 repositories=("$WORKSPACE_ROOT" frontend backend blockchain marketMaker)
 credential_pattern="(PRIVATE_KEY|SECRET_KEY|API_KEY|MNEMONIC|SEED_PHRASE)[\"']?[[:space:]]*[:=][[:space:]]*([\"'][A-Za-z0-9_./+-]{24,}[\"']|(0x)?[A-Za-z0-9_+-]{24,})"
 failed=0

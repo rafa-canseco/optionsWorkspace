@@ -2,6 +2,19 @@
   "version": 1,
   "active_context": "docs/ACTIVE_CONTEXT.md",
   "repositories": {
+    "workspace": {
+      "path": ".",
+      "base_branch": "main",
+      "owner": "workspace",
+      "context": [
+        "AGENTS.md",
+        "docs/HARNESS.md"
+      ],
+      "checks": {
+        "fast": ["./harness/bin/workspace-check", "fast"],
+        "full": ["./harness/bin/workspace-check", "full"]
+      }
+    },
     "frontend": {
       "path": "frontend",
       "base_branch": "staging",

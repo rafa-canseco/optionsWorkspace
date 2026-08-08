@@ -19,6 +19,7 @@ backend/frontend responsibilities, and open decisions.
 
 Use `../harness/bin/context <repository>` to list the additional context for one of:
 
+- `workspace` (workspace harness changes only)
 - `frontend`
 - `backend`
 - `blockchain`

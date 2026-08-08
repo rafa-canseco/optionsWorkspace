@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+# shellcheck source=../lib/repository-state.sh
+source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
+issue_id="${1:-}"
+verdict="${2:-}"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+  printf 'usage: %s <ISSUE-ID> <approved|changes_requested|blocked>\n' "$0" >&2
+  exit 2
+fi
+case "$verdict" in
+  approved|changes_requested|blocked) ;;
+  *)
+    printf 'record-review: invalid verdict: %s\n' "$verdict" >&2
+    exit 2
+    ;;
+esac
+
+run_dir="$RUNS_ROOT/$issue_id"
+owner_file="$run_dir/.claim/owner.json"
+if [[ ! -f "$owner_file" ]]; then
+  printf 'record-review: active reviewer claim required for %s\n' "$issue_id" >&2
+  exit 1
+fi
+"$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+if [[ "$(jq -r '.status' "$run_dir/task.json")" != "in_progress" ]]; then
+  printf 'record-review: reviewer must claim a ticket released for review\n' >&2
+  exit 1
+fi
+if [[ "$(jq -r '.status' "$run_dir/implementation.json")" != "implemented" ]]; then
+  printf 'record-review: implemented handoff required\n' >&2
+  exit 1
+fi
+
+repository="$(jq -r '.repositories[0]' "$run_dir/task.json")"
+reviewer="$(jq -r '.owner // empty' "$owner_file")"
+implementer="$(jq -r '.implementer // empty' "$run_dir/implementation.json")"
+implementation_owner_file=""
+shopt -s nullglob
+for candidate in "$run_dir"/.claim.*.review*/owner.json; do
+  implementation_owner_file="$candidate"
+done
+shopt -u nullglob
+if [[ -z "$implementation_owner_file" ]]; then
+  printf 'record-review: implementation claim history is missing\n' >&2
+  exit 1
+fi
+recorded_implementer="$(jq -r '.owner // empty' "$implementation_owner_file")"
+worktree="$(jq -r '.worktree // empty' "$owner_file")"
+if [[ -z "$recorded_implementer" || "$implementer" != "$recorded_implementer" || "$reviewer" == "$recorded_implementer" ]]; then
+  printf 'record-review: independent reviewer required; %s implemented this ticket\n' "$recorded_implementer" >&2
+  exit 1
+fi
+if [[ -z "$reviewer" ]]; then
+  printf 'record-review: claim has invalid reviewer label\n' >&2
+  exit 1
+fi
+worktree="$(validate_claimed_repository "$repository" "$worktree" "$issue_id")" || {
+  printf 'record-review: claim has invalid repository or worktree\n' >&2
+  exit 1
+}
+require_clean_commit "$worktree" || {
+  printf 'record-review: review requires a clean claimed commit\n' >&2
+  exit 1
+}
+reviewed_commit="$(git -C "$worktree" rev-parse HEAD)"
+reviewed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+findings="$(jq '.findings // []' "$run_dir/review.json")"
+
+tmp="$run_dir/review.json.tmp"
+jq -n \
+  --arg issue_id "$issue_id" \
+  --arg repository "$repository" \
+  --arg verdict "$verdict" \
+  --arg reviewer "$reviewer" \
+  --arg reviewed_commit "$reviewed_commit" \
+  --arg reviewed_at "$reviewed_at" \
+  --argjson findings "$findings" \
+  '{
+    issue_id: $issue_id,
+    repository: $repository,
+    verdict: $verdict,
+    reviewer: $reviewer,
+    reviewed_commit: $reviewed_commit,
+    reviewed_at: $reviewed_at,
+    findings: $findings
+  }' > "$tmp"
+mv "$tmp" "$run_dir/review.json"
+printf 'record-review: recorded %s by %s at %s\n' "$verdict" "$reviewer" "$reviewed_commit"

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+# shellcheck source=../lib/repository-state.sh
+source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
+issue_id="${1:-}"
+summary="${2:-}"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ || -z "$summary" ]]; then
+  printf 'usage: %s <ISSUE-ID> <summary> [file ...]\n' "$0" >&2
+  exit 2
+fi
+shift 2
+
+run_dir="$RUNS_ROOT/$issue_id"
+owner_file="$run_dir/.claim/owner.json"
+if [[ ! -f "$owner_file" ]]; then
+  printf 'record-implementation: active claim required for %s\n' "$issue_id" >&2
+  exit 1
+fi
+# Migration seam: validate the authoritative task identity, then replace legacy
+# implementation evidence. Strict validation resumes immediately after the write.
+if ! jq -e --arg issue_id "$issue_id" '
+  .issue_id == $issue_id and
+  (.repositories | type == "array" and length == 1) and
+  (.repositories[0] | IN("workspace", "frontend", "backend", "blockchain", "marketMaker"))
+' "$run_dir/task.json" >/dev/null; then
+  printf 'record-implementation: invalid task identity\n' >&2
+  exit 1
+fi
+
+repository="$(jq -r '.repositories[0]' "$run_dir/task.json")"
+implementer="$(jq -r '.owner // empty' "$owner_file")"
+worktree="$(jq -r '.worktree // empty' "$owner_file")"
+if [[ -z "$implementer" ]]; then
+  printf 'record-implementation: claim has invalid owner\n' >&2
+  exit 1
+fi
+worktree="$(validate_claimed_repository "$repository" "$worktree" "$issue_id")" || {
+  printf 'record-implementation: claim has invalid repository or worktree\n' >&2
+  exit 1
+}
+require_clean_commit "$worktree" || {
+  printf 'record-implementation: handoff requires a clean claimed commit\n' >&2
+  exit 1
+}
+commit_sha="$(git -C "$worktree" rev-parse HEAD)"
+recorded_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+files_json="$(jq -cn --args '$ARGS.positional' "$@")"
+
+tmp="$run_dir/implementation.json.tmp"
+jq -n \
+  --arg issue_id "$issue_id" \
+  --arg repository "$repository" \
+  --arg summary "$summary" \
+  --arg implementer "$implementer" \
+  --arg commit_sha "$commit_sha" \
+  --arg recorded_at "$recorded_at" \
+  --argjson files "$files_json" \
+  '{
+    issue_id: $issue_id,
+    repository: $repository,
+    status: "implemented",
+    summary: $summary,
+    files_changed: $files,
+    known_issues: [],
+    implementer: $implementer,
+    commit_sha: $commit_sha,
+    recorded_at: $recorded_at
+  }' > "$tmp"
+mv "$tmp" "$run_dir/implementation.json"
+"$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+printf 'record-implementation: recorded %s by %s at %s\n' "$issue_id" "$implementer" "$commit_sha"

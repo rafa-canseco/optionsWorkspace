@@ -20,13 +20,15 @@ for artifact in task.json implementation.json review.json verification.json; do
 done
 
 jq -e --arg issue_id "$issue_id" '
+  def timestamp: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+  ((keys - ["issue_id", "objective", "acceptance_criteria", "repositories", "dependencies", "status", "created_at"]) | length == 0) and
   .issue_id == $issue_id and
   (.objective | type == "string" and length > 0) and
   (.acceptance_criteria | type == "array" and all(.[]; type == "string" and length > 0)) and
   (.repositories | type == "array" and length == 1) and
-  (.repositories[0] | IN("frontend", "backend", "blockchain", "marketMaker")) and
+  (.repositories[0] | IN("workspace", "frontend", "backend", "blockchain", "marketMaker")) and
   (.dependencies | type == "array" and all(.[]; type == "string")) and
-  (.created_at | type == "string" and length > 0) and
+  (.created_at | timestamp) and
   (.status | IN("planned", "in_progress", "review", "blocked", "done"))
 ' "$run_dir/task.json" >/dev/null || {
   printf 'validate-run: invalid task packet: %s\n' "$issue_id" >&2
@@ -43,30 +45,86 @@ for artifact in implementation.json review.json verification.json; do
 done
 
 jq -e '
+  def timestamp: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+  ((keys - ["issue_id", "repository", "status", "summary", "files_changed", "known_issues", "implementer", "commit_sha", "recorded_at"]) | length == 0) and
   (.status | IN("pending", "implemented", "blocked")) and
   (.summary | type == "string") and
   (.files_changed | type == "array" and all(.[]; type == "string")) and
-  (.known_issues | type == "array" and all(.[]; type == "string"))
-' "$run_dir/implementation.json" >/dev/null
+  (.known_issues | type == "array" and all(.[]; type == "string")) and
+  (if .status == "implemented" then
+    (.implementer | type == "string" and length > 0) and
+    (.commit_sha | type == "string" and test("^[0-9a-f]{40,64}$")) and
+    (.recorded_at | timestamp)
+   else true end)
+' "$run_dir/implementation.json" >/dev/null || {
+  printf 'validate-run: invalid implementation evidence\n' >&2
+  exit 1
+}
+
 jq -e '
+  def timestamp: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+  ((keys - ["issue_id", "repository", "verdict", "reviewer", "reviewed_commit", "reviewed_at", "findings"]) | length == 0) and
   (.verdict | IN("pending", "approved", "changes_requested", "blocked")) and
   (.findings | type == "array" and all(.[];
     type == "object" and
+    ((keys - ["severity", "summary", "regression_test"]) | length == 0) and
     (.severity | IN("critical", "high", "medium", "low")) and
     (.summary | type == "string" and length > 0) and
     ((has("regression_test") | not) or (.regression_test | type == "string"))
-  ))
-' "$run_dir/review.json" >/dev/null
-jq -e '
+  )) and
+  (if .verdict == "pending" then true else
+    (.reviewer | type == "string" and length > 0) and
+    (.reviewed_commit | type == "string" and test("^[0-9a-f]{40,64}$")) and
+    (.reviewed_at | timestamp)
+  end)
+' "$run_dir/review.json" >/dev/null || {
+  printf 'validate-run: invalid review evidence\n' >&2
+  exit 1
+}
+
+jq -e --arg issue_id "$issue_id" --arg repository "$repository" '
+  def sha: type == "string" and test("^[0-9a-f]{40,64}$");
+  def timestamp: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+  def duration: type == "number" and floor == . and . >= 0;
+  ((keys - ["issue_id", "repository", "tier", "commit_sha", "started_at", "ended_at", "duration_seconds", "control_plane", "check_command", "overall", "commands"]) | length == 0) and
+  (.control_plane? | if . == null then true else ((keys - ["commit_sha", "manifest_blob_sha"]) | length == 0) end) and
+  (.check_command? | if . == null then true else ((keys - ["command", "arguments"]) | length == 0) end) and
+  (.commands | type == "array" and all(.[]; ((keys - ["command", "arguments", "started_at", "ended_at", "duration_seconds", "commit_sha", "exit_code", "status"]) | length == 0))) and
+  (.commit_sha // "") as $commit_sha |
   (.tier | IN("fast", "full")) and
   (.overall | IN("pending", "passed", "failed", "blocked")) and
-  (.commands | type == "array" and all(.[];
-    type == "object" and
-    (.command | type == "string" and length > 0) and
-    (.status | IN("pending", "passed", "failed", "blocked")) and
-    ((has("exit_code") | not) or (.exit_code | type == "number" and floor == .)) and
-    ((has("summary") | not) or (.summary | type == "string"))
-  ))
-' "$run_dir/verification.json" >/dev/null
+  (.commands | type == "array") and
+  (if (.overall | IN("passed", "failed")) then
+    (.commit_sha | sha) and
+    (.started_at | timestamp) and
+    (.ended_at | timestamp) and
+    (.duration_seconds | duration) and
+    (.control_plane.commit_sha | sha) and
+    (.control_plane.manifest_blob_sha | sha) and
+    (.check_command.command == "harness/bin/check") and
+    (.check_command.arguments == [$repository, .tier, "--record", $issue_id]) and
+    (.commands | length > 0) and
+    (all(.commands[];
+      (.command | type == "string" and length > 0) and
+      (.arguments | type == "array" and all(.[]; type == "string")) and
+      (.started_at | timestamp) and
+      (.ended_at | timestamp) and
+      (.duration_seconds | duration) and
+      (.commit_sha | sha) and
+      .commit_sha == $commit_sha and
+      (.exit_code | type == "number" and floor == .) and
+      (.status | IN("passed", "failed")) and
+      ((.status == "passed" and .exit_code == 0) or
+       (.status == "failed" and .exit_code != 0))
+    )) and
+    ((.overall == "passed" and all(.commands[]; .status == "passed" and .exit_code == 0)) or
+     (.overall == "failed" and any(.commands[]; .status == "failed" and .exit_code != 0)))
+  else
+    (.commands | length == 0)
+  end)
+' "$run_dir/verification.json" >/dev/null || {
+  printf 'validate-run: invalid or non-derived verification evidence\n' >&2
+  exit 1
+}
 
 printf 'validate-run: %s passed\n' "$issue_id"

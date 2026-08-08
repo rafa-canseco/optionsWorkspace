@@ -6,19 +6,29 @@
   "required": ["issue_id", "repository", "verdict", "findings"],
   "properties": {
     "issue_id": { "type": "string" },
-    "repository": { "enum": ["frontend", "backend", "blockchain", "marketMaker"] },
+    "repository": { "enum": ["workspace", "frontend", "backend", "blockchain", "marketMaker"] },
     "verdict": { "enum": ["pending", "approved", "changes_requested", "blocked"] },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "reviewed_commit": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "reviewed_at": { "type": "string", "format": "date-time" },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["severity", "summary"],
         "properties": {
           "severity": { "enum": ["critical", "high", "medium", "low"] },
-          "summary": { "type": "string" },
+          "summary": { "type": "string", "minLength": 1 },
           "regression_test": { "type": "string" }
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "verdict": { "not": { "const": "pending" } } }, "required": ["verdict"] },
+      "then": { "required": ["reviewer", "reviewed_commit", "reviewed_at"] }
+    }
+  ]
 }

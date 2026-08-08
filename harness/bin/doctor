@@ -4,23 +4,38 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
+mode="${1:-all}"
+
+if [[ "$mode" != "all" && "$mode" != "workspace" ]]; then
+  printf 'usage: %s [workspace]\n' "$0" >&2
+  exit 2
+fi
 
 required_commands=(git jq rg)
 required_repositories=(frontend backend blockchain marketMaker)
 required_workspace_files=(
   AGENTS.md
   docs/ACTIVE_CONTEXT.md
-  docs/v2/V2_OPERATING_CONTEXT.md
-  docs/architecture/REPO_MAP.md
+  docs/HARNESS.md
   harness/repos.json
+  harness/lib/repository-state.sh
+  harness/schemas/implementation.schema.json
+  harness/schemas/review.schema.json
+  harness/schemas/task.schema.json
+  harness/schemas/verification.schema.json
   harness/bin/check
   harness/bin/claim-ticket
   harness/bin/context
+  harness/bin/doctor
+  harness/bin/record-implementation
+  harness/bin/record-review
   harness/bin/release-ticket
   harness/bin/sensitive-check
   harness/bin/start-ticket
   harness/bin/status
   harness/bin/validate-run
+  harness/bin/workspace-check
+  harness/tests/lifecycle.sh
 )
 failed=0
 
@@ -41,38 +56,62 @@ done
 if [[ ! -f "$MANIFEST" ]]; then
   printf 'doctor: missing manifest: %s\n' "$MANIFEST" >&2
   failed=1
-elif ! jq -e '.version == 1 and (.repositories | keys | length == 4)' "$MANIFEST" >/dev/null; then
+elif ! jq -e '
+  .version == 1 and
+  .repositories.workspace.path == "." and
+  .repositories.workspace.base_branch == "main" and
+  (.repositories | keys | sort) == (["workspace", "frontend", "backend", "blockchain", "marketMaker"] | sort) and
+  all(.repositories[];
+    (.path | type == "string" and length > 0) and
+    (.base_branch | type == "string" and length > 0) and
+    (.owner | type == "string" and length > 0) and
+    (.context | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and
+    (.checks.fast | type == "array" and length > 0 and all(.[]; type == "string" and length > 0)) and
+    (.checks.full | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))
+  )
+' "$MANIFEST" >/dev/null; then
   printf 'doctor: invalid repository manifest\n' >&2
   failed=1
 fi
 
-for repository in "${required_repositories[@]}"; do
-  repository_path="$WORKSPACE_ROOT/$repository"
-  if [[ ! -d "$repository_path" ]]; then
-    printf 'doctor: missing repository: %s\n' "$repository" >&2
-    failed=1
-    continue
-  fi
-  if [[ ! -f "$repository_path/AGENTS.md" ]]; then
-    printf 'doctor: missing repository protocol: %s/AGENTS.md\n' "$repository" >&2
-    failed=1
-  fi
-  if git -C "$repository_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    branch="$(git -C "$repository_path" branch --show-current)"
-    dirty_count="$(git -C "$repository_path" status --short | wc -l | tr -d ' ')"
-    printf 'doctor: %-12s branch=%-36s dirty_entries=%s\n' "$repository" "${branch:-detached}" "$dirty_count"
-  else
-    printf 'doctor: %s is not a Git repository\n' "$repository" >&2
-    failed=1
-  fi
-done
+if git -C "$WORKSPACE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  branch="$(git -C "$WORKSPACE_ROOT" branch --show-current)"
+  dirty_count="$(git -C "$WORKSPACE_ROOT" status --short | wc -l | tr -d ' ')"
+  printf 'doctor: %-12s branch=%-36s dirty_entries=%s\n' workspace "${branch:-detached}" "$dirty_count"
+else
+  printf 'doctor: workspace is not a Git repository\n' >&2
+  failed=1
+fi
 
-for runtime in bun uv forge; do
-  if ! command -v "$runtime" >/dev/null 2>&1; then
-    printf 'doctor: missing project runtime: %s\n' "$runtime" >&2
-    failed=1
-  fi
-done
+if [[ "$mode" == "all" ]]; then
+  for repository in "${required_repositories[@]}"; do
+    repository_path="$WORKSPACE_ROOT/$repository"
+    if [[ ! -d "$repository_path" ]]; then
+      printf 'doctor: missing repository: %s\n' "$repository" >&2
+      failed=1
+      continue
+    fi
+    if [[ ! -f "$repository_path/AGENTS.md" ]]; then
+      printf 'doctor: missing repository protocol: %s/AGENTS.md\n' "$repository" >&2
+      failed=1
+    fi
+    if git -C "$repository_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      branch="$(git -C "$repository_path" branch --show-current)"
+      dirty_count="$(git -C "$repository_path" status --short | wc -l | tr -d ' ')"
+      printf 'doctor: %-12s branch=%-36s dirty_entries=%s\n' "$repository" "${branch:-detached}" "$dirty_count"
+    else
+      printf 'doctor: %s is not a Git repository\n' "$repository" >&2
+      failed=1
+    fi
+  done
+
+  for runtime in bun uv forge; do
+    if ! command -v "$runtime" >/dev/null 2>&1; then
+      printf 'doctor: missing project runtime: %s\n' "$runtime" >&2
+      failed=1
+    fi
+  done
+fi
 
 if ! "$SCRIPT_DIR/sensitive-check"; then
   failed=1
@@ -83,4 +122,8 @@ if (( failed != 0 )); then
   exit 1
 fi
 
-printf 'doctor: workspace ready\n'
+if [[ "$mode" == "workspace" ]]; then
+  printf 'doctor: workspace harness ready (product repositories and runtimes not checked)\n'
+else
+  printf 'doctor: full workspace ready\n'
+fi

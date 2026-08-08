@@ -7,7 +7,7 @@ MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
 repository="${1:-}"
 
 if [[ -z "$repository" ]]; then
-  printf 'usage: %s <frontend|backend|blockchain|marketMaker>\n' "$0" >&2
+  printf 'usage: %s <workspace|frontend|backend|blockchain|marketMaker>\n' "$0" >&2
   exit 2
 fi
 

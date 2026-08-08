@@ -15,24 +15,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Validate shell entrypoints
-        run: bash -n harness/bin/* harness/hooks/*
-      - name: Validate manifests and schemas
-        run: jq empty harness/repos.json harness/schemas/*.json
-      - name: Smoke-test task lifecycle
-        run: |
-          runs_dir="$(mktemp -d)"
-          HARNESS_RUNS_ROOT="$runs_dir" harness/bin/start-ticket B1N-999 backend "Harness lifecycle smoke"
-          HARNESS_RUNS_ROOT="$runs_dir" harness/bin/validate-run B1N-999
-          jq '.acceptance_criteria = ["Lifecycle is gated"]' "$runs_dir/B1N-999/task.json" > "$runs_dir/task.tmp"
-          mv "$runs_dir/task.tmp" "$runs_dir/B1N-999/task.json"
-          HARNESS_RUNS_ROOT="$runs_dir" harness/bin/claim-ticket B1N-999 ci backend/.worktrees/B1N-999
-          jq '.status = "implemented"' "$runs_dir/B1N-999/implementation.json" > "$runs_dir/implementation.tmp"
-          mv "$runs_dir/implementation.tmp" "$runs_dir/B1N-999/implementation.json"
-          jq '.tier = "full" | .overall = "passed"' "$runs_dir/B1N-999/verification.json" > "$runs_dir/verification.tmp"
-          mv "$runs_dir/verification.tmp" "$runs_dir/B1N-999/verification.json"
-          jq '.verdict = "approved"' "$runs_dir/B1N-999/review.json" > "$runs_dir/review.tmp"
-          mv "$runs_dir/review.tmp" "$runs_dir/B1N-999/review.json"
-          HARNESS_RUNS_ROOT="$runs_dir" harness/bin/release-ticket B1N-999 done
-      - name: Check sensitive staged or tracked paths
-        run: harness/bin/sensitive-check
+      - name: Install deterministic harness dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - name: Validate workspace harness
+        run: harness/bin/check workspace full

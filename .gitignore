@@ -1,6 +1,7 @@
 .DS_Store
 .agents/
 .claude/
+.pi-subagents/
 .mcp.json
 .test-feedback
 .worktrees/
