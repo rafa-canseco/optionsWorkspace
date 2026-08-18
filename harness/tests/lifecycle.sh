@@ -27,6 +27,10 @@ elif [[ "${FIXTURE_MUTATION:-}" == "head" ]]; then
   printf 'mutated-head\n' >> tracked.txt
   git add tracked.txt
   git commit -qm 'test: command mutated HEAD'
+elif [[ -n "${FIXTURE_STALE_MILESTONE:-}" ]]; then
+  file="$HARNESS_RUNS_ROOT/$FIXTURE_STALE_MILESTONE/milestones.json"
+  jq '.milestones[0].digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$file" > "$file.tmp"
+  mv "$file.tmp" "$file"
 fi
 exit "${FIXTURE_CHECK_EXIT:-0}"
 SCRIPT
@@ -65,6 +69,7 @@ JSON
 git -C "$TEST_WORKSPACE" init -q -b main
 git -C "$TEST_WORKSPACE" config user.email harness@example.invalid
 git -C "$TEST_WORKSPACE" config user.name 'Harness Test'
+git -C "$TEST_WORKSPACE" remote add origin https://github.com/example/project.git
 git -C "$TEST_WORKSPACE" add .
 git -C "$TEST_WORKSPACE" commit -qm 'test: initialize canonical fixture workspace'
 CONTROL_SHA="$(git -C "$TEST_WORKSPACE" rev-parse HEAD)"
@@ -81,6 +86,25 @@ git -C "$PRODUCT_REPO" add .
 git -C "$PRODUCT_REPO" commit -qm 'test: initialize product fixture'
 
 HARNESS_BIN="$TEST_WORKSPACE/harness/bin"
+FAKE_BIN="$TMP_ROOT/bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/gh" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  pr) cat "$GH_FIXTURE" ;;
+  api)
+    case "${2:-}" in
+      *required_status_checks) cat "$GH_REQUIRED_FIXTURE" ;;
+      *check-runs*) cat "$GH_CHECKS_FIXTURE" ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  *) exit 2 ;;
+esac
+SCRIPT
+chmod +x "$FAKE_BIN/gh"
+export PATH="$FAKE_BIN:$PATH"
 pass_count=0
 expect_pass() {
   local label="$1"
@@ -141,6 +165,15 @@ prepare_done_gate() {
   expect_pass "$issue_id release review" "$HARNESS_BIN/release-ticket" "$issue_id" review
   expect_pass "$issue_id claim reviewer" "$HARNESS_BIN/claim-ticket" "$issue_id" reviewer "$TEST_WORKSPACE"
   expect_pass "$issue_id record review" "$HARNESS_BIN/record-review" "$issue_id" approved
+}
+
+approve_source_review() {
+  local issue_id="$1" reviewer="$2"
+  record_full "$issue_id"
+  expect_pass "$issue_id release milestone review" "$HARNESS_BIN/release-ticket" "$issue_id" review
+  expect_pass "$issue_id claim milestone reviewer" "$HARNESS_BIN/claim-ticket" "$issue_id" "$reviewer" "$TEST_WORKSPACE"
+  expect_pass "$issue_id approve source review" "$HARNESS_BIN/record-review" "$issue_id" approved
+  expect_pass "$issue_id release approved source" "$HARNESS_BIN/release-ticket" "$issue_id" done
 }
 
 # Positive lifecycle: supported commands create commit-bound evidence and review.
@@ -396,6 +429,154 @@ expect_pass 'workflow schema fixes repair budget' jq -e '.properties.max_repairs
 mutate "$RUNS_ROOT/B1N-914/task.json" '.repositories += ["frontend"]'
 expect_fail 'runtime rejects multi-repository task' "$HARNESS_BIN/validate-run" B1N-914
 mutate "$RUNS_ROOT/B1N-914/task.json" '.repositories = ["workspace"]'
+
+# Typed dependency gates are commit-pinned, independently approved, and joined.
+new_run B1N-930
+expect_pass 'local milestone proposed' "$HARNESS_BIN/record-milestone" propose B1N-930 contract_approved tracked.txt
+expect_fail 'unreviewed milestone approval rejected' "$HARNESS_BIN/record-milestone" approve B1N-930 contract_approved
+SOURCE_COMMIT="$(jq -r '.commit_sha' "$RUNS_ROOT/B1N-930/implementation.json")"
+mutate "$RUNS_ROOT/B1N-930/review.json" ".verdict=\"approved\" | .reviewer=\"forged-reviewer\" | .reviewed_commit=\"$SOURCE_COMMIT\" | .reviewed_at=\"2026-08-18T00:00:00Z\""
+expect_fail 'forged mutable review cannot approve milestone' "$HARNESS_BIN/record-milestone" approve B1N-930 contract_approved
+jq -n '{issue_id:"B1N-930",repository:"workspace",verdict:"pending",findings:[]}' > "$RUNS_ROOT/B1N-930/review.json"
+approve_source_review B1N-930 contract-reviewer
+expect_pass 'local milestone independently approved' "$HARNESS_BIN/record-milestone" approve B1N-930 contract_approved
+cp "$RUNS_ROOT/B1N-930/milestones.json" "$TMP_ROOT/approved-milestone.backup"
+mutate "$RUNS_ROOT/B1N-930/milestones.json" '.milestones[0].approver = "spoofed-reviewer"'
+expect_fail 'spoofed milestone approver rejected' "$HARNESS_BIN/validate-run" B1N-930
+mv "$TMP_ROOT/approved-milestone.backup" "$RUNS_ROOT/B1N-930/milestones.json"
+select_issue_branch B1N-931
+expect_pass 'local consumer start' "$HARNESS_BIN/start-ticket" B1N-931 workspace 'Local dependency consumer'
+mutate "$RUNS_ROOT/B1N-931/task.json" '.acceptance_criteria=["Gate satisfied"] | .dependencies=[{"issue_id":"B1N-930","gate":"contract_approved"}]'
+expect_pass 'approved local gate permits claim' "$HARNESS_BIN/claim-ticket" B1N-931 consumer "$TEST_WORKSPACE"
+expect_pass 'dependent implementation records' "$HARNESS_BIN/record-implementation" B1N-931 'Dependent implementation' tracked.txt
+cp "$RUNS_ROOT/B1N-930/milestones.json" "$TMP_ROOT/release-gate.backup"
+mutate "$RUNS_ROOT/B1N-930/milestones.json" '.milestones[0].digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+expect_fail 'stale gate blocks review delivery' "$HARNESS_BIN/release-ticket" B1N-931 review
+mv "$TMP_ROOT/release-gate.backup" "$RUNS_ROOT/B1N-930/milestones.json"
+cp "$RUNS_ROOT/B1N-930/milestones.json" "$TMP_ROOT/during-check.backup"
+expect_fail 'gate stale during full check blocks transition' env FIXTURE_STALE_MILESTONE=B1N-930 "$HARNESS_BIN/release-ticket" B1N-931 review
+mv "$TMP_ROOT/during-check.backup" "$RUNS_ROOT/B1N-930/milestones.json"
+expect_pass 'fresh gate permits review delivery' "$HARNESS_BIN/release-ticket" B1N-931 review
+cp "$RUNS_ROOT/B1N-930/milestones.json" "$TMP_ROOT/review-ready.backup"
+mutate "$RUNS_ROOT/B1N-930/milestones.json" '.milestones[0].digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+expect_pass 'ready revalidates awaiting review gate' bash -c '
+  "$1/ready" | grep -E "B1N-931 blocked B1N-930:contract_approved stale"
+' _ "$HARNESS_BIN"
+mv "$TMP_ROOT/review-ready.backup" "$RUNS_ROOT/B1N-930/milestones.json"
+
+new_run B1N-932
+expect_pass 'fixture candidate proposed' "$HARNESS_BIN/record-milestone" propose B1N-932 fixture_pinned tracked.txt
+select_issue_branch B1N-933
+expect_pass 'partial join start' "$HARNESS_BIN/start-ticket" B1N-933 workspace 'Partial join consumer'
+mutate "$RUNS_ROOT/B1N-933/task.json" '.acceptance_criteria=["All gates"] | .dependencies=[{"issue_id":"B1N-930","gate":"contract_approved"},{"issue_id":"B1N-932","gate":"fixture_pinned"},{"issue_id":"B1N-999","gate":"merged"}]'
+expect_fail 'partial join rejected' "$HARNESS_BIN/claim-ticket" B1N-933 consumer "$TEST_WORKSPACE"
+select_issue_branch B1N-934
+expect_pass 'independent run start' "$HARNESS_BIN/start-ticket" B1N-934 workspace 'Independent branch'
+mutate "$RUNS_ROOT/B1N-934/task.json" '.acceptance_criteria=["Independent"]'
+expect_pass 'ready isolates blocked descendants' bash -c '
+  output="$("$1/ready")"
+  grep -E "B1N-933 blocked B1N-932:fixture_pinned.*B1N-999:merged" <<<"$output" >/dev/null &&
+    grep -E "B1N-934 ready implementation" <<<"$output" >/dev/null
+' _ "$HARNESS_BIN"
+
+cp "$RUNS_ROOT/B1N-930/milestones.json" "$TMP_ROOT/milestones.backup"
+mutate "$RUNS_ROOT/B1N-930/milestones.json" '.milestones[0].digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+select_issue_branch B1N-935
+expect_pass 'stale digest consumer start' "$HARNESS_BIN/start-ticket" B1N-935 workspace 'Stale digest consumer'
+mutate "$RUNS_ROOT/B1N-935/task.json" '.acceptance_criteria=["Fresh digest"] | .dependencies=[{"issue_id":"B1N-930","gate":"contract_approved"}]'
+expect_fail 'altered digest rejected' "$HARNESS_BIN/claim-ticket" B1N-935 consumer "$TEST_WORKSPACE"
+mv "$TMP_ROOT/milestones.backup" "$RUNS_ROOT/B1N-930/milestones.json"
+cp "$RUNS_ROOT/B1N-930/implementation.json" "$TMP_ROOT/implementation.backup"
+mutate "$RUNS_ROOT/B1N-930/implementation.json" '.commit_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+expect_fail 'changed source commit rejected' "$HARNESS_BIN/claim-ticket" B1N-935 consumer "$TEST_WORKSPACE"
+mv "$TMP_ROOT/implementation.backup" "$RUNS_ROOT/B1N-930/implementation.json"
+mutate "$RUNS_ROOT/B1N-930/milestones.json" '.milestones[0].algorithm = "sha1"'
+expect_fail 'wrong digest algorithm rejected' "$HARNESS_BIN/validate-run" B1N-930
+mutate "$RUNS_ROOT/B1N-930/milestones.json" '.milestones[0].algorithm = "sha256"'
+
+GH_URL='https://github.com/example/project/pull/7'
+new_run B1N-936
+GH_HEAD="$(jq -r '.commit_sha' "$RUNS_ROOT/B1N-936/implementation.json")"
+GH_FIXTURE="$TMP_ROOT/gh.json"
+GH_REQUIRED_FIXTURE="$TMP_ROOT/required-checks.json"
+GH_CHECKS_FIXTURE="$TMP_ROOT/check-runs.json"
+printf '{"checks":[{"context":"validate","app_id":123}]}\n' > "$GH_REQUIRED_FIXTURE"
+printf '{"check_runs":[{"name":"validate","status":"completed","conclusion":"success","app":{"id":123}}]}\n' > "$GH_CHECKS_FIXTURE"
+export GH_FIXTURE GH_REQUIRED_FIXTURE GH_CHECKS_FIXTURE
+cat > "$GH_FIXTURE" <<JSON
+{"number":7,"url":"$GH_URL","headRefOid":"$GH_HEAD","baseRefName":"main","state":"OPEN","mergeCommit":null,"reviewDecision":"APPROVED","statusCheckRollup":[{"name":"validate","status":"COMPLETED","conclusion":"SUCCESS"}]}
+JSON
+expect_fail 'foreign repository pr rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-936 pr_ready 'https://github.com/foreign/project/pull/7'
+expect_pass 'pr ready proposed' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-936 pr_ready "$GH_URL"
+approve_source_review B1N-936 pr-reviewer
+expect_pass 'pr ready approved' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" approve B1N-936 pr_ready
+select_issue_branch B1N-937
+expect_pass 'pr consumer start' "$HARNESS_BIN/start-ticket" B1N-937 workspace 'PR consumer'
+mutate "$RUNS_ROOT/B1N-937/task.json" '.acceptance_criteria=["PR ready"] | .dependencies=[{"issue_id":"B1N-936","gate":"pr_ready"}]'
+expect_pass 'live green pr permits claim' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/claim-ticket" B1N-937 consumer "$TEST_WORKSPACE"
+mutate "$GH_FIXTURE" '.headRefOid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
+select_issue_branch B1N-938
+expect_pass 'changed head consumer start' "$HARNESS_BIN/start-ticket" B1N-938 workspace 'Changed head consumer'
+mutate "$RUNS_ROOT/B1N-938/task.json" '.acceptance_criteria=["Same head"] | .dependencies=[{"issue_id":"B1N-936","gate":"pr_ready"}]'
+expect_fail 'changed pr head rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/claim-ticket" B1N-938 consumer "$TEST_WORKSPACE"
+
+new_run B1N-940
+RED_HEAD="$(jq -r '.commit_sha' "$RUNS_ROOT/B1N-940/implementation.json")"
+cat > "$GH_FIXTURE" <<JSON
+{"number":8,"url":"$GH_URL","headRefOid":"$RED_HEAD","baseRefName":"main","state":"OPEN","mergeCommit":null,"reviewDecision":"APPROVED","statusCheckRollup":[{"name":"validate","status":"COMPLETED","conclusion":"FAILURE"}]}
+JSON
+mutate "$GH_CHECKS_FIXTURE" '.check_runs[0].conclusion="failure"'
+expect_fail 'red pr checks rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-940 pr_ready "$GH_URL"
+mutate "$GH_CHECKS_FIXTURE" '.check_runs[0].conclusion="success"'
+mutate "$GH_FIXTURE" '.reviewDecision=""'
+expect_fail 'missing pr review rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-940 pr_ready "$GH_URL"
+mutate "$GH_FIXTURE" '.reviewDecision="APPROVED"'
+printf '{"checks":[{"context":"required-but-missing","app_id":123}]}\n' > "$GH_REQUIRED_FIXTURE"
+expect_fail 'missing required check rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-940 pr_ready "$GH_URL"
+printf '{"checks":[{"context":"validate","app_id":123}]}\n' > "$GH_REQUIRED_FIXTURE"
+mutate "$GH_CHECKS_FIXTURE" '.check_runs[0].app.id = 999'
+expect_fail 'wrong check app rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-940 pr_ready "$GH_URL"
+mutate "$GH_CHECKS_FIXTURE" '.check_runs[0].app.id = 123'
+mutate "$GH_FIXTURE" '.baseRefName="staging"'
+expect_fail 'wrong pr target rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-940 pr_ready "$GH_URL"
+
+new_run B1N-942
+MERGED_HEAD="$(jq -r '.commit_sha' "$RUNS_ROOT/B1N-942/implementation.json")"
+cat > "$GH_FIXTURE" <<JSON
+{"number":9,"url":"$GH_URL","headRefOid":"$MERGED_HEAD","baseRefName":"main","state":"MERGED","mergeCommit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"reviewDecision":"APPROVED","statusCheckRollup":[{"name":"validate","status":"COMPLETED","conclusion":"SUCCESS"}]}
+JSON
+expect_pass 'merged milestone proposed' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" propose B1N-942 merged "$GH_URL"
+approve_source_review B1N-942 merge-reviewer
+expect_pass 'merged milestone approved' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/record-milestone" approve B1N-942 merged
+select_issue_branch B1N-943
+expect_pass 'merged-as-ready consumer start' "$HARNESS_BIN/start-ticket" B1N-943 workspace 'Merged satisfies ready'
+mutate "$RUNS_ROOT/B1N-943/task.json" '.acceptance_criteria=["Merged satisfies ready"] | .dependencies=[{"issue_id":"B1N-942","gate":"pr_ready"}]'
+expect_pass 'merged satisfies same-source pr ready' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/claim-ticket" B1N-943 consumer "$TEST_WORKSPACE"
+mutate "$GH_FIXTURE" '.mergeCommit.oid = "cccccccccccccccccccccccccccccccccccccccc"'
+select_issue_branch B1N-944
+expect_pass 'changed merge consumer start' "$HARNESS_BIN/start-ticket" B1N-944 workspace 'Changed merge consumer'
+mutate "$RUNS_ROOT/B1N-944/task.json" '.acceptance_criteria=["Same merge"] | .dependencies=[{"issue_id":"B1N-942","gate":"merged"}]'
+expect_fail 'changed merge commit rejected' env HARNESS_GH_FIXTURE="$GH_FIXTURE" "$HARNESS_BIN/claim-ticket" B1N-944 consumer "$TEST_WORKSPACE"
+
+select_issue_branch B1N-945
+expect_pass 'missing predecessor start' "$HARNESS_BIN/start-ticket" B1N-945 workspace 'Missing predecessor'
+mutate "$RUNS_ROOT/B1N-945/task.json" '.acceptance_criteria=["Exists"] | .dependencies=[{"issue_id":"B1N-999","gate":"merged"}]'
+expect_fail 'missing predecessor rejected' "$HARNESS_BIN/claim-ticket" B1N-945 consumer "$TEST_WORKSPACE"
+select_issue_branch B1N-946
+expect_pass 'unknown gate start' "$HARNESS_BIN/start-ticket" B1N-946 workspace 'Unknown gate'
+mutate "$RUNS_ROOT/B1N-946/task.json" '.acceptance_criteria=["Closed enum"] | .dependencies=[{"issue_id":"B1N-930","gate":"unknown"}]'
+expect_fail 'unknown gate rejected' "$HARNESS_BIN/validate-run" B1N-946
+select_issue_branch B1N-947
+expect_pass 'legacy dependency start' "$HARNESS_BIN/start-ticket" B1N-947 workspace 'Legacy dependencies'
+mutate "$RUNS_ROOT/B1N-947/task.json" '.acceptance_criteria=["Migrate"] | .dependencies=["B1N-999"]'
+expect_fail 'legacy dependency requires migration' "$HARNESS_BIN/validate-run" B1N-947
+expect_pass 'legacy dependency migrates explicitly' "$HARNESS_BIN/migrate-dependencies" B1N-947 B1N-999:merged
+expect_pass 'migrated dependency validates' "$HARNESS_BIN/validate-run" B1N-947
+select_issue_branch B1N-948
+expect_pass 'rollback migration start' "$HARNESS_BIN/start-ticket" B1N-948 workspace 'Rollback dependency migration'
+mutate "$RUNS_ROOT/B1N-948/task.json" '.acceptance_criteria=["Rollback"] | .dependencies=["B1N-948"]'
+expect_fail 'invalid dependency migration rolls back' "$HARNESS_BIN/migrate-dependencies" B1N-948 B1N-948:merged
+expect_pass 'failed migration preserves legacy input' jq -e '.dependencies == ["B1N-948"]' "$RUNS_ROOT/B1N-948/task.json"
 
 # Sensitive preflight failure is recorded but cannot satisfy release.
 new_run B1N-915

@@ -9,6 +9,8 @@ RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
 source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
 # shellcheck source=../lib/workflow.sh
 source "$WORKSPACE_ROOT/harness/lib/workflow.sh"
+# shellcheck source=../lib/dependencies.sh
+source "$WORKSPACE_ROOT/harness/lib/dependencies.sh"
 issue_id="${1:-}"
 next_status="${2:-review}"
 
@@ -44,6 +46,11 @@ case "$next_status:$phase" in
   review:candidate|planned:reviewing|blocked:reviewing|done:reviewing) ;;
   *) printf 'release-ticket: invalid lifecycle transition: phase=%s status=%s\n' "$phase" "$next_status" >&2; exit 1 ;;
 esac
+if ! blockers="$(dependencies_check "$run_dir")"; then
+  blockers="${blockers//$'\n'/; }"
+  printf 'release-ticket: unsatisfied dependency: %s\n' "$blockers" >&2
+  exit 1
+fi
 
 # A mutable JSON assertion is never the release authority. Re-run the canonical
 # full check at the claimed commit and atomically replace verification evidence.
@@ -52,6 +59,11 @@ if [[ "$next_status" == "review" || "$next_status" == "done" ]]; then
     printf 'release-ticket: canonical full verification failed; transition blocked\n' >&2
     exit 1
   fi
+fi
+if ! blockers="$(dependencies_check "$run_dir")"; then
+  blockers="${blockers//$'\n'/; }"
+  printf 'release-ticket: dependency became stale during verification: %s\n' "$blockers" >&2
+  exit 1
 fi
 
 "$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null

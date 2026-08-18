@@ -76,6 +76,7 @@ jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
 jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
   '{issue_id: $issue_id, repository: $repository, tier: "fast", overall: "pending", commands: []}' \
   > "$run_dir/verification.json"
+jq -n --arg issue_id "$issue_id" '{issue_id:$issue_id,milestones:[]}' > "$run_dir/milestones.json"
 workflow_create "$run_dir" "$issue_id"
 
 printf 'start-ticket: created %s\n' "$run_dir"

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+issue_id="${1:-}"
+shift || true
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ || $# -eq 0 ]]; then
+  printf 'usage: %s <ISSUE-ID> <PREDECESSOR:GATE>...\n' "$0" >&2
+  exit 2
+fi
+file="$RUNS_ROOT/$issue_id/task.json"
+jq -e '.dependencies | length > 0 and all(.[]; type == "string")' "$file" >/dev/null || {
+  printf 'migrate-dependencies: non-empty legacy string dependencies required\n' >&2
+  exit 1
+}
+edges='[]'
+for pair in "$@"; do
+  predecessor="${pair%%:*}"
+  gate="${pair#*:}"
+  if [[ ! "$predecessor" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ || ! " contract_approved fixture_pinned pr_ready merged " == *" $gate "* ]]; then
+    printf 'migrate-dependencies: invalid mapping: %s\n' "$pair" >&2
+    exit 2
+  fi
+  edges="$(jq -cn --argjson edges "$edges" --arg issue_id "$predecessor" --arg gate "$gate" '$edges + [{issue_id:$issue_id,gate:$gate}]')"
+done
+legacy="$(jq -c '.dependencies | sort' "$file")"
+mapped="$(jq -cn --argjson edges "$edges" '$edges | map(.issue_id) | sort')"
+[[ "$(jq -cn --argjson edges "$edges" '$edges | unique | length')" == "$#" ]] || {
+  printf 'migrate-dependencies: mappings must be unique\n' >&2
+  exit 1
+}
+[[ "$legacy" == "$mapped" ]] || {
+  printf 'migrate-dependencies: every legacy predecessor requires exactly one mapping\n' >&2
+  exit 1
+}
+tmp="$file.tmp"
+backup="$file.legacy.$$"
+cp "$file" "$backup"
+restore() { [[ ! -f "$backup" ]] || mv "$backup" "$file"; }
+trap restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+jq --argjson edges "$edges" '.dependencies = $edges' "$file" > "$tmp"
+mv "$tmp" "$file"
+"$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+rm "$backup"
+trap - EXIT INT TERM
+printf 'migrate-dependencies: migrated %s\n' "$issue_id"
