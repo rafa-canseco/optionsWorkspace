@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 TEST_WORKSPACE="$TMP_ROOT/workspace"
 RUNS_ROOT="$TEST_WORKSPACE/harness/runs"
+export HARNESS_RUNS_ROOT="$RUNS_ROOT"
 mkdir -p "$TEST_WORKSPACE"
 cp -R "$SOURCE_ROOT/harness" "$TEST_WORKSPACE/harness"
 cp "$SOURCE_ROOT/.gitignore" "$TEST_WORKSPACE/.gitignore"
@@ -151,6 +152,18 @@ expect_pass 'positive verification shape' jq -e --arg control "$CONTROL_SHA" --a
   (.commit_sha == .commands[0].commit_sha) and .commands[0].exit_code == 0 and
   .control_plane.commit_sha == $control and .control_plane.manifest_blob_sha == $manifest
 ' "$RUNS_ROOT/B1N-900/verification.json"
+
+# workflow.json remains authoritative if the task.status projection fails.
+select_issue_branch B1N-923
+expect_pass 'projection fixture start' "$HARNESS_BIN/start-ticket" B1N-923 workspace 'Projection fixture'
+mutate "$RUNS_ROOT/B1N-923/task.json" '.acceptance_criteria = ["Workflow remains authoritative"]'
+expect_pass 'claim survives task projection failure' env HARNESS_TEST_FAIL_TASK_PROJECTION=1 \
+  "$HARNESS_BIN/claim-ticket" B1N-923 implementer "$TEST_WORKSPACE"
+expect_pass 'projection failure keeps valid workflow' "$HARNESS_BIN/validate-run" B1N-923
+expect_pass 'projection failure advances workflow only' jq -e '.phase == "implementing"' "$RUNS_ROOT/B1N-923/workflow.json"
+expect_pass 'status derives from validated workflow' bash -c '
+  HARNESS_RUNS_ROOT="$1" "$2/status" | grep -E "B1N-923[[:space:]]+implementing[[:space:]]+0/2[[:space:]]+in_progress"
+' _ "$RUNS_ROOT" "$HARNESS_BIN"
 
 # Failed execution is recorded from the process and cannot release.
 new_run B1N-901
@@ -297,6 +310,78 @@ git -C "$TEST_WORKSPACE" worktree remove --force "$ALT_PRODUCT_CALLER"
 
 expect_pass 'product release reruns bound full' "$HARNESS_BIN/release-ticket" B1N-917 review
 
+# A failed lifecycle transition restores the active claim for retry.
+new_run B1N-922
+mkdir "$RUNS_ROOT/B1N-922/.workflow.lock"
+expect_fail 'release lock contention fails safely' "$HARNESS_BIN/release-ticket" B1N-922 review
+expect_pass 'failed release restores claim and phase' bash -c '
+  [[ -f "$1/.claim/owner.json" ]] && [[ "$(jq -r .phase "$1/workflow.json")" == candidate ]]
+' _ "$RUNS_ROOT/B1N-922"
+rmdir "$RUNS_ROOT/B1N-922/.workflow.lock"
+expect_pass 'restored release retries' "$HARNESS_BIN/release-ticket" B1N-922 review
+
+# Fixed lifecycle: two repair cycles, terminal third rejection, and resumable ordinary block.
+new_run B1N-918
+expect_pass 'multi-event workflow validates' "$HARNESS_BIN/validate-run" B1N-918
+expect_pass 'cycle one release review' "$HARNESS_BIN/release-ticket" B1N-918 review
+expect_pass 'cycle one claim reviewer' "$HARNESS_BIN/claim-ticket" B1N-918 reviewer-1 "$TEST_WORKSPACE"
+expect_pass 'cycle one verdict' "$HARNESS_BIN/record-review" B1N-918 changes_requested
+expect_pass 'cycle one repair' "$HARNESS_BIN/release-ticket" B1N-918 planned
+expect_pass 'cycle one budget' jq -e '.phase == "repair" and .repair_count == 1' "$RUNS_ROOT/B1N-918/workflow.json"
+expect_pass 'cycle one claim repair' "$HARNESS_BIN/claim-ticket" B1N-918 implementer "$TEST_WORKSPACE"
+expect_pass 'cycle one implementation' "$HARNESS_BIN/record-implementation" B1N-918 'Repair one' tracked.txt
+expect_pass 'cycle two release review' "$HARNESS_BIN/release-ticket" B1N-918 review
+expect_pass 'cycle two claim reviewer' "$HARNESS_BIN/claim-ticket" B1N-918 reviewer-2 "$TEST_WORKSPACE"
+expect_pass 'cycle two verdict' "$HARNESS_BIN/record-review" B1N-918 changes_requested
+expect_pass 'cycle two repair' "$HARNESS_BIN/release-ticket" B1N-918 planned
+expect_pass 'cycle two budget' jq -e '.phase == "repair" and .repair_count == 2' "$RUNS_ROOT/B1N-918/workflow.json"
+expect_pass 'cycle two claim repair' "$HARNESS_BIN/claim-ticket" B1N-918 implementer "$TEST_WORKSPACE"
+expect_pass 'cycle two implementation' "$HARNESS_BIN/record-implementation" B1N-918 'Repair two' tracked.txt
+expect_pass 'cycle three release review' "$HARNESS_BIN/release-ticket" B1N-918 review
+expect_pass 'cycle three claim reviewer' "$HARNESS_BIN/claim-ticket" B1N-918 reviewer-3 "$TEST_WORKSPACE"
+expect_pass 'cycle three verdict' "$HARNESS_BIN/record-review" B1N-918 changes_requested
+expect_pass 'cycle three human block' "$HARNESS_BIN/release-ticket" B1N-918 planned
+expect_pass 'repair cap is terminal' jq -e '.phase == "human_blocked" and .repair_count == 2 and .blocker != null' "$RUNS_ROOT/B1N-918/workflow.json"
+expect_fail 'human blocked cannot be claimed' "$HARNESS_BIN/claim-ticket" B1N-918 implementer "$TEST_WORKSPACE"
+
+new_run B1N-919
+expect_pass 'blocked release review' "$HARNESS_BIN/release-ticket" B1N-919 review
+expect_pass 'blocked claim reviewer' "$HARNESS_BIN/claim-ticket" B1N-919 blocker-reviewer "$TEST_WORKSPACE"
+expect_pass 'blocked verdict' "$HARNESS_BIN/record-review" B1N-919 blocked
+expect_pass 'blocked release is resumable' "$HARNESS_BIN/release-ticket" B1N-919 blocked
+expect_pass 'blocked budget unchanged' jq -e '.phase == "repair" and .repair_count == 0 and .blocker != null' "$RUNS_ROOT/B1N-919/workflow.json"
+expect_pass 'resume reports blocker and next action' bash -c '
+  "$1/start-ticket" B1N-919 workspace "Lifecycle fixture" | grep -E "phase=repair.*blocker=independent review blocked.*next=claim repair implementation"
+' _ "$HARNESS_BIN"
+expect_pass 'blocked repair claim' "$HARNESS_BIN/claim-ticket" B1N-919 implementer "$TEST_WORKSPACE"
+expect_pass 'blocked claim clears blocker' jq -e '.phase == "implementing" and .repair_count == 0 and .blocker == null' "$RUNS_ROOT/B1N-919/workflow.json"
+
+# Active legacy runs migrate explicitly; completed historical runs stay untouched.
+select_issue_branch B1N-920
+expect_pass 'legacy start' "$HARNESS_BIN/start-ticket" B1N-920 workspace 'Legacy fixture'
+mutate "$RUNS_ROOT/B1N-920/task.json" '.acceptance_criteria = ["Migrate explicitly"]'
+rm "$RUNS_ROOT/B1N-920/workflow.json"
+expect_fail 'legacy run does not resume implicitly' "$HARNESS_BIN/start-ticket" B1N-920 workspace 'Legacy fixture'
+expect_pass 'legacy planned migration' "$HARNESS_BIN/migrate-run" B1N-920 migration-owner planned 0
+expect_pass 'migrated workflow validates' "$HARNESS_BIN/validate-run" B1N-920
+expect_fail 'migration is one-time' "$HARNESS_BIN/migrate-run" B1N-920 migration-owner planned 0
+expect_fail 'phase skipping rejected' bash -c '
+  source "$1/harness/lib/workflow.sh"
+  workflow_transition "$2/B1N-920" planned approved actor approve
+' _ "$TEST_WORKSPACE" "$RUNS_ROOT"
+
+select_issue_branch B1N-921
+expect_pass 'completed legacy start' "$HARNESS_BIN/start-ticket" B1N-921 workspace 'Completed fixture'
+mutate "$RUNS_ROOT/B1N-921/task.json" '.status = "done"'
+rm "$RUNS_ROOT/B1N-921/workflow.json"
+expect_fail 'completed legacy migration rejected' "$HARNESS_BIN/migrate-run" B1N-921 migration-owner planned 0
+expect_pass 'completed legacy start is historical' bash -c '
+  "$1/start-ticket" B1N-921 workspace "Completed fixture" | grep -q "historical completed"
+' _ "$HARNESS_BIN"
+expect_pass 'completed legacy status is complete' bash -c '
+  HARNESS_RUNS_ROOT="$1" "$2/status" | grep -E "B1N-921[[:space:]]+historical.*complete"
+' _ "$RUNS_ROOT" "$HARNESS_BIN"
+
 # Legacy implementation evidence can be replaced by the supported recorder.
 new_run B1N-914
 cat > "$RUNS_ROOT/B1N-914/implementation.json" <<'JSON'
@@ -307,6 +392,7 @@ expect_pass 'migrated implementation validates' "$HARNESS_BIN/validate-run" B1N-
 
 # Schema/runtime contract checks requiring no extra validator dependency.
 expect_pass 'task schema exactly one repository' jq -e '.properties.repositories.maxItems == 1' "$TEST_WORKSPACE/harness/schemas/task.schema.json"
+expect_pass 'workflow schema fixes repair budget' jq -e '.properties.max_repairs.const == 2 and .properties.repair_count.maximum == 2' "$TEST_WORKSPACE/harness/schemas/workflow.schema.json"
 mutate "$RUNS_ROOT/B1N-914/task.json" '.repositories += ["frontend"]'
 expect_fail 'runtime rejects multi-repository task' "$HARNESS_BIN/validate-run" B1N-914
 mutate "$RUNS_ROOT/B1N-914/task.json" '.repositories = ["workspace"]'
@@ -321,5 +407,13 @@ expect_pass 'sensitive failure recorded' jq -e \
   '.overall == "failed" and .commands[0].command == "harness/bin/sensitive-check" and .commands[0].status == "failed" and .commands[0].exit_code != 0' \
   "$RUNS_ROOT/B1N-915/verification.json"
 expect_fail 'sensitive failure cannot release' "$HARNESS_BIN/release-ticket" B1N-915 review
+mkdir "$RUNS_ROOT/B1N-924"
+printf '{malformed\n' > "$RUNS_ROOT/B1N-924/task.json"
+expect_pass 'status reports malformed and invalid runs then continues' bash -c '
+  output="$(HARNESS_RUNS_ROOT="$1" "$2/status")"
+  grep -E "B1N-924[[:space:]]+invalid" <<<"$output" >/dev/null &&
+    grep -E "B1N-903[[:space:]]+invalid" <<<"$output" >/dev/null &&
+    grep -E "B1N-914[[:space:]]+candidate" <<<"$output" >/dev/null
+' _ "$RUNS_ROOT" "$HARNESS_BIN"
 
 printf 'lifecycle: passed %s deterministic assertions\n' "$pass_count"

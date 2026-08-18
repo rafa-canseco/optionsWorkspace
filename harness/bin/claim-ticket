@@ -7,6 +7,8 @@ MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
 RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
 # shellcheck source=../lib/repository-state.sh
 source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
+# shellcheck source=../lib/workflow.sh
+source "$WORKSPACE_ROOT/harness/lib/workflow.sh"
 issue_id="${1:-}"
 owner="${2:-}"
 worktree="${3:-}"
@@ -25,13 +27,18 @@ fi
 
 "$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
 
-if ! jq -e '
-  (.acceptance_criteria | length > 0) and
-  (.status | IN("planned", "review", "blocked"))
-' "$run_dir/task.json" >/dev/null; then
-  printf 'claim-ticket: requires acceptance criteria and a claimable task status\n' >&2
+jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null || {
+  printf 'claim-ticket: requires acceptance criteria\n' >&2
   exit 1
-fi
+}
+phase="$(jq -r '.phase' "$run_dir/workflow.json")"
+case "$phase" in
+  planned) action=claim_implementation ;;
+  repair) action=claim_repair ;;
+  awaiting_review) action=claim_review ;;
+  human_blocked) printf 'claim-ticket: human_blocked requires a follow-up Linear decision\n' >&2; exit 1 ;;
+  *) printf 'claim-ticket: phase is not claimable: %s\n' "$phase" >&2; exit 1 ;;
+esac
 
 repository="$(jq -r '.repositories[0]' "$run_dir/task.json")"
 resolved_worktree="$(validate_claimed_repository "$repository" "$worktree" "$issue_id")" || {
@@ -56,10 +63,19 @@ jq -n \
   '{owner: $owner, worktree: $worktree, claimed_at: $claimed_at}' \
   > "$claim_dir/owner.json"
 
-task_tmp="$run_dir/task.json.tmp"
-jq '.status = "in_progress"' "$run_dir/task.json" > "$task_tmp"
-mv "$task_tmp" "$run_dir/task.json"
+if [[ "$phase" == awaiting_review ]]; then
+  jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
+    '{issue_id:$issue_id,repository:$repository,verdict:"pending",findings:[]}' > "$run_dir/review.json.tmp"
+  mv "$run_dir/review.json.tmp" "$run_dir/review.json"
+  next_phase=reviewing
+else
+  next_phase=implementing
+fi
+if ! workflow_transition "$run_dir" "$phase" "$next_phase" "$owner" "$action"; then
+  rm -rf "$claim_dir"
+  exit 1
+fi
 
-printf '# Current\n\n- Owner: %s\n- Worktree: %s\n- Next action: execute the approved plan\n- Blockers: none recorded\n' \
-  "$owner" "$resolved_worktree" > "$run_dir/current.md"
-printf 'claim-ticket: %s claimed by %s in %s\n' "$issue_id" "$owner" "$resolved_worktree"
+printf '# Current\n\n- Owner: %s\n- Worktree: %s\n- Phase: %s\n- Next action: %s\n- Blockers: none recorded\n' \
+  "$owner" "$resolved_worktree" "$next_phase" "$(workflow_next_action "$next_phase")" > "$run_dir/current.md"
+printf 'claim-ticket: %s claimed by %s in %s; phase=%s\n' "$issue_id" "$owner" "$resolved_worktree" "$next_phase"

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
+RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+# shellcheck source=../lib/workflow.sh
+source "$WORKSPACE_ROOT/harness/lib/workflow.sh"
+issue_id="${1:-}"
+actor="${2:-}"
+phase="${3:-}"
+repair_count="${4:-}"
+
+if [[ ! "$issue_id" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ || -z "$actor" ||
+      ! "$phase" =~ ^(planned|implementing|candidate|awaiting_review|reviewing|repair|human_blocked)$ ||
+      ! "$repair_count" =~ ^[0-2]$ || $# -ne 4 ]]; then
+  printf 'usage: %s <ISSUE-ID> <actor> <active-phase> <repair-count:0..2>\n' "$0" >&2
+  exit 2
+fi
+run_dir="$RUNS_ROOT/$issue_id"
+[[ ! -e "$run_dir/workflow.json" ]] || { printf 'migrate-run: workflow already exists\n' >&2; exit 1; }
+"$SCRIPT_DIR/validate-run" "$issue_id" --legacy >/dev/null
+status="$(jq -r '.status' "$run_dir/task.json")"
+case "$status:$phase" in
+  planned:planned|planned:repair|in_progress:implementing|in_progress:candidate|\
+  in_progress:reviewing|review:awaiting_review|blocked:human_blocked) ;;
+  *) printf 'migrate-run: phase conflicts with legacy status\n' >&2; exit 1 ;;
+esac
+case "$phase" in
+  implementing|candidate|reviewing) [[ -f "$run_dir/.claim/owner.json" ]] ;;
+  *) [[ ! -d "$run_dir/.claim" ]] ;;
+esac || { printf 'migrate-run: claim state conflicts with phase\n' >&2; exit 1; }
+
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+next="$(workflow_next_action "$phase")"
+blocker=null
+[[ "$phase" != human_blocked ]] || blocker='"migrated legacy blocker"'
+tmp="$run_dir/workflow.json.tmp.$$"
+jq -n --arg issue_id "$issue_id" --arg phase "$phase" --arg actor "$actor" --arg at "$now" \
+  --arg next "$next" --argjson repairs "$repair_count" --argjson blocker "$blocker" '{
+    issue_id:$issue_id, phase:$phase, repair_count:$repairs, max_repairs:2,
+    blocker:$blocker, last_evidence_commit:null, next_action:$next,
+    history:[{from:null,to:$phase,action:"migrate",actor:$actor,at:$at,repair_count:$repairs}]
+  }' > "$tmp"
+mv "$tmp" "$run_dir/workflow.json"
+"$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+printf 'migrate-run: %s phase=%s repairs=%s/2\n' "$issue_id" "$phase" "$repair_count"

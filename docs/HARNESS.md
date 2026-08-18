@@ -30,6 +30,13 @@ model's context window.
 Linear remains authoritative. Files under `harness/runs/` are local coordination
 memory and are intentionally ignored by Git.
 
+Each new run has a `workflow.json` checkpoint with fixed phases from `planned` through
+`approved`. Only independent `changes_requested` verdicts consume the two-repair
+budget; the third enters terminal `human_blocked`. A `blocked` verdict returns to
+`repair` without consuming budget. Active legacy runs require one explicit
+`migrate-run <ISSUE-ID> <actor> <phase> <repair-count>`; completed runs are untouched.
+`start-ticket` and `status` report the validated phase, budget, blocker, and next action.
+
 One task packet owns exactly one repository. Split a cross-repository initiative
 into linked Linear tickets, one per repository, then run those tickets in parallel
 after their shared ABI/schema/API decision is recorded.

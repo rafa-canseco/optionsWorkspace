@@ -29,8 +29,8 @@ if [[ ! -f "$owner_file" ]]; then
   exit 1
 fi
 "$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
-if [[ "$(jq -r '.status' "$run_dir/task.json")" != "in_progress" ]]; then
-  printf 'record-review: reviewer must claim a ticket released for review\n' >&2
+if [[ "$(jq -r '.phase // empty' "$run_dir/workflow.json")" != reviewing ]]; then
+  printf 'record-review: workflow phase must be reviewing\n' >&2
   exit 1
 fi
 if [[ "$(jq -r '.status' "$run_dir/implementation.json")" != "implemented" ]]; then
