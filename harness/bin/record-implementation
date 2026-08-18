@@ -7,6 +7,8 @@ MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
 RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
 # shellcheck source=../lib/repository-state.sh
 source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
+# shellcheck source=../lib/workflow.sh
+source "$WORKSPACE_ROOT/harness/lib/workflow.sh"
 issue_id="${1:-}"
 summary="${2:-}"
 
@@ -20,6 +22,15 @@ run_dir="$RUNS_ROOT/$issue_id"
 owner_file="$run_dir/.claim/owner.json"
 if [[ ! -f "$owner_file" ]]; then
   printf 'record-implementation: active claim required for %s\n' "$issue_id" >&2
+  exit 1
+fi
+phase="$(jq -r '.phase // empty' "$run_dir/workflow.json" 2>/dev/null)"
+legacy_migration=false
+if [[ "$phase" == candidate ]] && jq -e '.status == "implemented" and (has("commit_sha") | not)' \
+  "$run_dir/implementation.json" >/dev/null; then
+  legacy_migration=true
+elif [[ "$phase" != implementing ]]; then
+  printf 'record-implementation: workflow phase must be implementing\n' >&2
   exit 1
 fi
 # Migration seam: validate the authoritative task identity, then replace legacy
@@ -73,5 +84,8 @@ jq -n \
     recorded_at: $recorded_at
   }' > "$tmp"
 mv "$tmp" "$run_dir/implementation.json"
+if [[ "$legacy_migration" == false ]]; then
+  workflow_transition "$run_dir" implementing candidate "$implementer" record_implementation '' "$commit_sha"
+fi
 "$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
-printf 'record-implementation: recorded %s by %s at %s\n' "$issue_id" "$implementer" "$commit_sha"
+printf 'record-implementation: recorded %s by %s at %s; phase=candidate\n' "$issue_id" "$implementer" "$commit_sha"

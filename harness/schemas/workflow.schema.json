@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness workflow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issue_id", "phase", "repair_count", "max_repairs", "blocker", "last_evidence_commit", "next_action", "history"],
+  "properties": {
+    "issue_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]+-[0-9]+$"},
+    "phase": {"enum": ["planned", "implementing", "candidate", "awaiting_review", "reviewing", "repair", "human_blocked", "approved"]},
+    "repair_count": {"type": "integer", "minimum": 0, "maximum": 2},
+    "max_repairs": {"const": 2},
+    "blocker": {"type": ["string", "null"]},
+    "last_evidence_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+    "next_action": {"type": "string", "minLength": 1},
+    "history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "action", "actor", "at"],
+        "properties": {
+          "from": {"type": ["string", "null"]},
+          "to": {"type": "string"},
+          "action": {"enum": ["start", "migrate", "claim_implementation", "claim_repair", "record_implementation", "release_review", "claim_review", "changes_requested", "review_blocked", "repair_budget_exhausted", "approve"]},
+          "actor": {"type": "string", "minLength": 1},
+          "at": {"type": "string"},
+          "evidence_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+          "repair_count": {"type": "integer", "minimum": 0, "maximum": 2}
+        }
+      }
+    }
+  }
+}

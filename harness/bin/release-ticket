@@ -7,6 +7,8 @@ MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
 RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
 # shellcheck source=../lib/repository-state.sh
 source "$WORKSPACE_ROOT/harness/lib/repository-state.sh"
+# shellcheck source=../lib/workflow.sh
+source "$WORKSPACE_ROOT/harness/lib/workflow.sh"
 issue_id="${1:-}"
 next_status="${2:-review}"
 
@@ -36,6 +38,12 @@ if ! jq -e --arg issue_id "$issue_id" --arg repository "$repository" '
   printf 'release-ticket: invalid task repository identity\n' >&2
   exit 1
 fi
+
+phase="$(jq -r '.phase // empty' "$run_dir/workflow.json")"
+case "$next_status:$phase" in
+  review:candidate|planned:reviewing|blocked:reviewing|done:reviewing) ;;
+  *) printf 'release-ticket: invalid lifecycle transition: phase=%s status=%s\n' "$phase" "$next_status" >&2; exit 1 ;;
+esac
 
 # A mutable JSON assertion is never the release authority. Re-run the canonical
 # full check at the claimed commit and atomically replace verification evidence.
@@ -142,6 +150,7 @@ recorded_implementer() {
 }
 
 review_is_current_and_independent() {
+  local expected_verdict="$1"
   local worktree head claim_owner implementer implementation_commit recorded_owner
   worktree="$(claim_worktree)" || return
   head="$(git -C "$worktree" rev-parse HEAD)"
@@ -153,13 +162,13 @@ review_is_current_and_independent() {
     printf 'release-ticket: approved review must use a different recorded owner label\n' >&2
     return 1
   fi
-  if ! jq -e --arg reviewer "$claim_owner" --arg head "$head" '
-    .verdict == "approved" and
+  if ! jq -e --arg reviewer "$claim_owner" --arg head "$head" --arg verdict "$expected_verdict" '
+    .verdict == $verdict and
     .reviewer == $reviewer and
     .reviewed_commit == $head and
     (.reviewed_at | type == "string" and length > 0)
   ' "$run_dir/review.json" >/dev/null; then
-    printf 'release-ticket: approved review must identify the current reviewer label and commit\n' >&2
+    printf 'release-ticket: review must identify the current reviewer label, verdict, and commit\n' >&2
     return 1
   fi
 }
@@ -173,11 +182,17 @@ case "$next_status" in
       exit 1
     fi
     ;;
+  planned)
+    review_is_current_and_independent changes_requested || exit 1
+    ;;
+  blocked)
+    review_is_current_and_independent blocked || exit 1
+    ;;
   done)
     if ! jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null ||
        ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
        ! verification_is_current_and_canonical full ||
-       ! review_is_current_and_independent; then
+       ! review_is_current_and_independent approved; then
       printf 'release-ticket: done requires acceptance criteria, implementation, current canonical full verification, and reviewer attestation\n' >&2
       exit 1
     fi
@@ -191,12 +206,34 @@ while [[ -e "$claim_history" ]]; do
   claim_suffix=$((claim_suffix + 1))
   claim_history="$run_dir/.claim.$released_at.$next_status.$claim_suffix"
 done
+recover_claim() {
+  if [[ -d "$claim_history" && ! -e "$claim_dir" ]] &&
+     [[ "$(jq -r '.phase // empty' "$run_dir/workflow.json" 2>/dev/null)" == "$phase" ]]; then
+    mv "$claim_history" "$claim_dir"
+  fi
+}
+trap recover_claim EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mv "$claim_dir" "$claim_history"
-
-task_tmp="$run_dir/task.json.tmp"
-jq --arg next_status "$next_status" '.status = $next_status' "$run_dir/task.json" > "$task_tmp"
-mv "$task_tmp" "$run_dir/task.json"
-
-printf '# Current\n\n- Owner: unassigned\n- Worktree: unassigned\n- Next action: %s\n- Blockers: see task/review evidence\n' \
-  "$next_status" > "$run_dir/current.md"
-printf 'release-ticket: %s released with status=%s; claim history preserved\n' "$issue_id" "$next_status"
+actor="$(jq -r '.owner' "$claim_history/owner.json")"
+case "$next_status" in
+  review)
+    workflow_transition "$run_dir" candidate awaiting_review "$actor" release_review '' \
+      "$(jq -r '.commit_sha' "$run_dir/implementation.json")"
+    ;;
+  planned|blocked)
+    verdict="$next_status"
+    [[ "$next_status" != planned ]] || verdict=changes_requested
+    workflow_review_result "$run_dir" "$actor" "$verdict" "$(jq -r '.reviewed_commit' "$run_dir/review.json")"
+    ;;
+  done)
+    workflow_transition "$run_dir" reviewing approved "$actor" approve '' \
+      "$(jq -r '.reviewed_commit' "$run_dir/review.json")"
+    ;;
+esac
+trap - EXIT INT TERM
+phase="$(jq -r '.phase' "$run_dir/workflow.json")"
+printf '# Current\n\n- Owner: unassigned\n- Worktree: unassigned\n- Phase: %s\n- Next action: %s\n- Blockers: %s\n' \
+  "$phase" "$(workflow_next_action "$phase")" "$(jq -r '.blocker // "none"' "$run_dir/workflow.json")" > "$run_dir/current.md"
+printf 'release-ticket: %s released; phase=%s; claim history preserved\n' "$issue_id" "$phase"

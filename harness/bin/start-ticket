@@ -5,6 +5,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WORKSPACE_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)"
 MANIFEST="$WORKSPACE_ROOT/harness/repos.json"
 RUNS_ROOT="${HARNESS_RUNS_ROOT:-$WORKSPACE_ROOT/harness/runs}"
+# shellcheck source=../lib/workflow.sh
+source "$WORKSPACE_ROOT/harness/lib/workflow.sh"
 issue_id="${1:-}"
 repository="${2:-}"
 shift_count=0
@@ -29,7 +31,17 @@ fi
 
 run_dir="$RUNS_ROOT/$issue_id"
 if [[ -e "$run_dir" ]]; then
-  printf 'start-ticket: resuming existing run: %s\n' "$run_dir"
+  if [[ ! -f "$run_dir/workflow.json" ]]; then
+    if [[ "$(jq -r '.status // empty' "$run_dir/task.json" 2>/dev/null)" == done ]]; then
+      printf 'start-ticket: historical completed run: %s\n' "$issue_id"
+      exit 0
+    fi
+    printf 'start-ticket: active legacy run requires migrate-run: %s\n' "$issue_id" >&2
+    exit 1
+  fi
+  "$SCRIPT_DIR/validate-run" "$issue_id" >/dev/null
+  jq -r '"start-ticket: resumed phase=\(.phase) repairs=\(.repair_count)/\(.max_repairs) blocker=\(.blocker // "none") next=\(.next_action)"' \
+    "$run_dir/workflow.json"
   exit 0
 fi
 
@@ -64,6 +76,7 @@ jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
 jq -n --arg issue_id "$issue_id" --arg repository "$repository" \
   '{issue_id: $issue_id, repository: $repository, tier: "fast", overall: "pending", commands: []}' \
   > "$run_dir/verification.json"
+workflow_create "$run_dir" "$issue_id"
 
 printf 'start-ticket: created %s\n' "$run_dir"
 printf 'start-ticket: Linear remains authoritative; complete acceptance criteria before implementation\n'
