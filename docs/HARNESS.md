@@ -37,6 +37,14 @@ budget; the third enters terminal `human_blocked`. A `blocked` verdict returns t
 `migrate-run <ISSUE-ID> <actor> <phase> <repair-count>`; completed runs are untouched.
 `start-ticket` and `status` report the validated phase, budget, blocker, and next action.
 
+Task dependencies are typed `{issue_id, gate}` edges using only `contract_approved`,
+`fixture_pinned`, `pr_ready`, or `merged`. `record-milestone propose|approve` binds local
+artifacts or GitHub PRs to the source commit and requires an independent approver.
+`claim-ticket` enforces every incoming edge as a join; `ready` lists exact pending or stale
+gates without blocking unrelated tickets. Legacy string edges require an explicit
+`migrate-dependencies` mapping. GitHub gates fail closed if the repository, head, base,
+review, checks, or merge evidence changes or cannot be queried.
+
 One task packet owns exactly one repository. Split a cross-repository initiative
 into linked Linear tickets, one per repository, then run those tickets in parallel
 after their shared ABI/schema/API decision is recorded.
