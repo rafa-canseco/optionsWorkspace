@@ -47,6 +47,8 @@ Never hide a red baseline.
 
 ## Parallel Orchestration
 
+- Never initiate Codex agents. Use Pi sessions managed by Herdr for delegation and
+  independent review.
 - For multiple independent tickets, non-trivial cross-repository work, or when the
   user requests agents, the orchestrator delegates implementation to repository
   owners in parallel.
