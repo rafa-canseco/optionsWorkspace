@@ -591,10 +591,30 @@ expect_fail 'sensitive failure cannot release' "$HARNESS_BIN/release-ticket" B1N
 mkdir "$RUNS_ROOT/B1N-924"
 printf '{malformed\n' > "$RUNS_ROOT/B1N-924/task.json"
 expect_pass 'status reports malformed and invalid runs then continues' bash -c '
-  output="$(HARNESS_RUNS_ROOT="$1" "$2/status")"
+  output="$(HARNESS_RUNS_ROOT="$1" "$2/status" --validate)"
   grep -E "B1N-924[[:space:]]+invalid" <<<"$output" >/dev/null &&
     grep -E "B1N-903[[:space:]]+invalid" <<<"$output" >/dev/null &&
     grep -E "B1N-914[[:space:]]+candidate" <<<"$output" >/dev/null
 ' _ "$RUNS_ROOT" "$HARNESS_BIN"
+
+# Explicit legacy status migration is safe, caller-bound, and leaves invalid input unchanged.
+mkdir -p "$RUNS_ROOT/B1N-980"
+printf '{"issue_id":"B1N-980","objective":"Legacy status","acceptance_criteria":["Migrate"],"repositories":["workspace"],"dependencies":[],"status":"implementing","created_at":"2026-08-20T00:00:00Z"}\n' > "$RUNS_ROOT/B1N-980/task.json"
+expect_pass 'unclaimed legacy status migration' "$HARNESS_BIN/migrate-run-statuses" B1N-980
+expect_pass 'unclaimed legacy status migrated' jq -e '.status == "in_progress"' "$RUNS_ROOT/B1N-980/task.json"
+select_issue_branch B1N-981
+mkdir -p "$RUNS_ROOT/B1N-981/.claim"
+printf '{"issue_id":"B1N-981","objective":"Claimed legacy status","acceptance_criteria":["Migrate"],"repositories":["workspace"],"dependencies":[],"status":"implementing","created_at":"2026-08-20T00:00:00Z"}\n' > "$RUNS_ROOT/B1N-981/task.json"
+printf '{"owner":"legacy-owner","worktree":"%s"}\n' "$TEST_WORKSPACE" > "$RUNS_ROOT/B1N-981/.claim/owner.json"
+expect_fail 'wrong caller cannot migrate legacy status' "$HARNESS_BIN/migrate-run-statuses" B1N-981
+expect_pass 'claimed legacy status migration' bash -c 'cd "$1" && "$2" B1N-981' bash "$TEST_WORKSPACE" "$HARNESS_BIN/migrate-run-statuses"
+mkdir -p "$RUNS_ROOT/B1N-982"
+printf '{"issue_id":"B1N-999","objective":"Invalid identity","acceptance_criteria":["Migrate"],"repositories":["workspace"],"dependencies":[],"status":"implementing","created_at":"2026-08-20T00:00:00Z"}\n' > "$RUNS_ROOT/B1N-982/task.json"
+expect_fail 'invalid legacy migration is unchanged' "$HARNESS_BIN/migrate-run-statuses" B1N-982
+expect_pass 'invalid legacy input preserved' jq -e '.status == "implementing"' "$RUNS_ROOT/B1N-982/task.json"
+mkdir -p "$RUNS_ROOT/B1N-983"
+printf '{bad\n' > "$RUNS_ROOT/B1N-983/task.json"
+expect_fail 'malformed legacy migration fails' "$HARNESS_BIN/migrate-run-statuses" B1N-983
+expect_pass 'malformed legacy input preserved' grep -q '{bad' "$RUNS_ROOT/B1N-983/task.json"
 
 printf 'lifecycle: passed %s deterministic assertions\n' "$pass_count"
