@@ -13,12 +13,15 @@ model's context window.
 ./harness/bin/claim-ticket B1N-123 backend-agent backend/.worktrees/B1N-123
 ./harness/bin/status
 ./harness/bin/context backend
+# During edits, run only the affected test/lint/type selector.
+# Before committing, run fast once. High-risk work also runs full and gets
+# independent defensive review; standard work gets independent review; approved
+# low-risk work needs neither full nor a fresh reviewer.
 ./harness/bin/check backend fast
-# Before committing: run full on the candidate and obtain independent diff review.
-./harness/bin/check backend full
-# Commit only that green, reviewed candidate, then bind the handoff to its SHA:
+# Commit only that green candidate, then bind the handoff to its SHA:
 ./harness/bin/record-implementation B1N-123 "Implemented compact vault state" src/vault.py
-# release-ticket reruns canonical full verification and overwrites mutable evidence:
+# release-ticket reruns the risk-required canonical tier and overwrites mutable evidence.
+# Standard/high-risk tickets continue through independent review:
 ./harness/bin/release-ticket B1N-123 review
 # The reviewer claims the unchanged commit and records the review attestation:
 ./harness/bin/claim-ticket B1N-123 backend-reviewer backend/.worktrees/B1N-123
@@ -61,12 +64,14 @@ available for an independent reviewer. `status` shows every local run without lo
 its documents into model context. A claim is rejected until the task packet has at
 least one acceptance criterion.
 
-`release-ticket ... review` and `release-ticket ... done` rerun the canonical full
-command through `check ... --record` before evaluating the transition, so a complete
-but forged JSON pass is overwritten rather than trusted. `done` additionally requires
-non-empty acceptance criteria and an approved reviewer attestation. Proof and review
-must name the repository HEAD in the current claimed worktree; stale, mismatched,
-dirty, same-owner-label, or non-canonical evidence is rejected. Claimed worktrees
+`release-ticket ... review` and `release-ticket ... done` rerun the canonical tier
+required by the task risk before evaluating the transition, so a complete but forged
+JSON pass is overwritten rather than trusted. Approved low-risk work may move directly
+from candidate to approved after canonical fast evidence. Standard/high-risk `done`
+additionally requires non-empty acceptance criteria and an approved independent
+reviewer attestation. Proof and required review must name the repository HEAD in the
+current claimed worktree; stale, mismatched, dirty, same-owner-label, or non-canonical
+evidence is rejected. Claimed worktrees
 must belong to the configured Git repository, descend from its base branch, and use
 a feature branch containing the issue ID when they are not detached.
 
@@ -75,12 +80,13 @@ contract is stable. Never allow agents to share a branch or edit overlapping fil
 
 ## Delivery Policy
 
-A ticket-scoped candidate commit is created only after the unrecorded full check,
-sensitive-data check, and independent diff review pass. The commit must live on the
-ticket's feature branch, contain only that ticket's files, use a conventional message
-with the Linear ID, and leave unrelated working-tree changes untouched. After commit,
-the supported record/release commands bind implementation, a fresh canonical full
-run, and the reviewer attestation to the unchanged SHA.
+A ticket-scoped candidate commit is created only after the unrecorded risk-required
+check and sensitive-data check pass. Standard/high-risk work also requires independent
+diff review. The commit must live on the ticket's feature branch, contain only that
+ticket's files, use a conventional message with the Linear ID, and leave unrelated
+working-tree changes untouched. After commit, the supported record/release commands
+bind implementation, a fresh canonical risk-required run, any required reviewer
+attestation, and the final workflow transition to the unchanged SHA.
 
 The verified feature branch is then pushed and a draft PR is opened automatically.
 Product PRs target `staging`; the workspace-harness repository targets `main`. The
@@ -96,8 +102,23 @@ must not close it early or require a second user instruction after merge.
 
 ## Verification
 
-- `fast`: deterministic, offline feedback used while coding.
-- `full`: review gate with builds, integration checks, and risk-appropriate contract
+During editing, run the narrowest affected selector. Run the repository-wide `fast`
+gate once before handoff, not after every edit.
+
+Risk is explicit in `task.json`; missing legacy values are treated as `high`:
+
+- `low`: canonical `fast`, no fresh reviewer;
+- `standard`: canonical `fast`, independent reviewer;
+- `high`: canonical `full`, independent defensive reviewer.
+
+Only Linear acceptance criteria or a direct user instruction may approve a downgrade
+from `high`; record that decision as `risk_approval` before claiming the ticket. This
+local record is an auditable, unauthenticated attestation, not proof of human identity.
+Agents must verify it against Linear or the direct instruction; the tier becomes
+immutable for the lifecycle after claim.
+
+- `fast`: deterministic, offline handoff evidence.
+- `full`: high-risk gate with builds, integration checks, and risk-appropriate contract
   fuzz/invariant/fork verification.
 - `check <repository> <fast|full> --record <ISSUE-ID>`: executes the command array
   configured in `harness/repos.json` without `eval`, derives command and overall
@@ -116,9 +137,10 @@ after execution. A command that changes the worktree, HEAD, or control plane pro
 failed, non-releasable evidence.
 
 Failed commands still write failed evidence and return nonzero. Passing JSON is not a
-trusted receipt by itself: release transitions rerun canonical full verification and
-overwrite it. For a legacy active run whose implementation artifact predates commit
-metadata, rerun `record-implementation` from the original clean implementation claim;
+trusted receipt by itself: release transitions rerun canonical risk-required
+verification and overwrite it. For a legacy active run whose implementation artifact
+predates commit metadata, rerun `record-implementation` from the original clean
+implementation claim;
 it deliberately replaces the legacy artifact, then applies strict validation.
 
 `record-review <ISSUE-ID> <approved|changes_requested|blocked>` derives a reviewer
@@ -146,9 +168,15 @@ verification. This is not a signed or cryptographic CI receipt and does not prov
 product correctness. The required GitHub Actions status check on the PR is the
 authoritative CI result; branch protection must enforce it. Implementation summaries,
 acceptance assessment, architecture, test semantics, and review findings remain
-human/AI judgment artifacts. A reviewer must inspect the diff before the candidate
-commit and bind that judgment to the unchanged commit afterward; the reviewer must not
-author verification pass status.
+human/AI judgment artifacts. When review is required, a reviewer must inspect the diff
+before the candidate commit and bind that judgment to the unchanged commit afterward;
+the reviewer must not author verification pass status.
+
+Risk-approval sources and local owner labels are procedural attestations because every
+local agent can edit run files; Linear and protected GitHub review remain the identity
+authorities. The harness enforces their shape, safe defaults, tier-specific gates, and
+immutability after claim. It does not claim to authenticate a human against a malicious
+local process.
 
 The current baseline may be red. The harness reports failures honestly; it does not
 silently waive them. Product cleanup should be tracked in separate Linear tickets.

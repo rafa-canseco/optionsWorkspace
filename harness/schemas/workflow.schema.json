@@ -22,7 +22,7 @@
         "properties": {
           "from": {"type": ["string", "null"]},
           "to": {"type": "string"},
-          "action": {"enum": ["start", "migrate", "claim_implementation", "claim_repair", "record_implementation", "release_review", "claim_review", "changes_requested", "review_blocked", "repair_budget_exhausted", "approve"]},
+          "action": {"enum": ["start", "migrate", "claim_implementation", "claim_repair", "record_implementation", "release_review", "approve_low_risk", "claim_review", "changes_requested", "review_blocked", "repair_budget_exhausted", "approve"]},
           "actor": {"type": "string", "minLength": 1},
           "at": {"type": "string"},
           "evidence_commit": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},

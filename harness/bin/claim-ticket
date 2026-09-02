@@ -48,6 +48,7 @@ if ! blockers="$(dependencies_check "$run_dir")"; then
 fi
 
 repository="$(jq -r '.repositories[0]' "$run_dir/task.json")"
+risk_tier="$(jq -r '.risk_tier // "high"' "$run_dir/task.json")"
 resolved_worktree="$(validate_claimed_repository "$repository" "$worktree" "$issue_id")" || {
   printf 'claim-ticket: worktree does not match the task repository or branch contract\n' >&2
   exit 1
@@ -67,7 +68,8 @@ jq -n \
   --arg owner "$owner" \
   --arg worktree "$resolved_worktree" \
   --arg claimed_at "$claimed_at" \
-  '{owner: $owner, worktree: $worktree, claimed_at: $claimed_at}' \
+  --arg risk_tier "$risk_tier" \
+  '{owner: $owner, worktree: $worktree, claimed_at: $claimed_at, risk_tier: $risk_tier}' \
   > "$claim_dir/owner.json"
 
 if [[ "$phase" == awaiting_review ]]; then

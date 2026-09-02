@@ -62,8 +62,9 @@ Never hide a red baseline.
   verification command, and output path.
 - Explorers are read-only and are used only when the implementation surface is
   unclear. Implementers do not approve their own work.
-- A fresh reviewer reads the task packet, diff, durable decisions, and verification
-  evidence. It should not inherit an implementer's full conversation.
+- Standard- and high-risk work uses a fresh reviewer that reads the task packet,
+  diff, durable decisions, and verification evidence without inheriting the
+  implementer's full conversation. Approved low-risk work does not spawn one.
 
 <pi-intercom>
 Coordinate with other local pi sessions on related codebases. Use `/skill:pi-intercom` for patterns.
@@ -93,12 +94,20 @@ Linear. Promote architectural decisions to `docs/decisions/`.
 
 ## Verification Protocol
 
-- Run `harness/bin/check <repository> fast` during implementation.
-- Run `harness/bin/check <repository> full` on the uncommitted candidate before
-  creating its ticket-scoped commit and before review is approved. After that commit,
-  the release gate reruns the canonical full command and binds evidence to its SHA.
-- `fast` must be deterministic and offline. `full` may require explicitly declared
-  integration services or pinned fork RPC configuration.
+- During implementation, run the narrowest affected test, lint, type, or build
+  selector. Do not run a repository-wide gate after every edit.
+- Run `harness/bin/check <repository> fast` once on the uncommitted candidate before
+  handoff. `fast` must be deterministic and offline.
+- Every task has a risk tier. Missing legacy values default to `high`:
+  - `low`: targeted edit-loop checks, canonical `fast`, no fresh reviewer;
+  - `standard`: targeted edit-loop checks, canonical `fast`, independent review;
+  - `high`: targeted edit-loop checks, canonical `full`, independent defensive review.
+- Only Linear acceptance criteria or a direct user instruction may approve `low` or
+  `standard`. Record that source in `task.json.risk_approval` before claiming work.
+- `full` may require explicitly declared integration services or pinned fork RPC
+  configuration. Use it only for high-risk work or when acceptance criteria require
+  that evidence. The release gate reruns the risk-required canonical command and
+  binds evidence to the candidate SHA.
 - Never mark a task done solely from an agent's written claim. Local
   `verification.json` is deterministic commit-bound evidence for both the claimed
   repository and committed harness control plane; the required GitHub status check
@@ -114,11 +123,11 @@ Linear. Promote architectural decisions to `docs/decisions/`.
 - Never stage, commit, print, summarize, or push secrets, private keys, seed phrases,
   API tokens, `.env` files, `.mcp.json`, or `settings.local.json`.
 - Run `harness/bin/sensitive-check` before any commit or push.
-- After the unrecorded full check passes and an independent reviewer has inspected
-  the candidate diff, create a local ticket-scoped candidate commit. Then record the
-  implementation, let the release gate rerun full verification at that SHA, and bind
-  the reviewer attestation to the unchanged commit before delivery. Use a conventional
-  message containing the Linear ID and stage only the files owned by that ticket.
+- After the unrecorded risk-required check passes, create a local ticket-scoped
+  candidate commit. Standard/high-risk work also requires independent diff review and
+  a reviewer attestation bound to the unchanged commit; approved low-risk work does
+  not. Use a conventional message containing the Linear ID and stage only files owned
+  by that ticket.
 - Push the verified feature branch and open a draft PR by default. Product PRs target
   the repository's `staging` branch; workspace-harness PRs target `main`. Add the
   verification evidence and a closing reference such as `Fixes B1N-123` to the PR,

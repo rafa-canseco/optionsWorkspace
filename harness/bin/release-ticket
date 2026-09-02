@@ -42,9 +42,33 @@ if ! jq -e --arg issue_id "$issue_id" --arg repository "$repository" '
 fi
 
 phase="$(jq -r '.phase // empty' "$run_dir/workflow.json")"
-case "$next_status:$phase" in
-  review:candidate|planned:reviewing|blocked:reviewing|done:reviewing) ;;
-  *) printf 'release-ticket: invalid lifecycle transition: phase=%s status=%s\n' "$phase" "$next_status" >&2; exit 1 ;;
+risk_tier="$(jq -r '.risk_tier // "high"' "$run_dir/task.json")"
+required_tier=fast
+[[ "$risk_tier" != high ]] || required_tier=full
+claim_risk_tier="$(jq -r '.risk_tier // "high"' "$claim_dir/owner.json")"
+if [[ "$claim_risk_tier" != "$risk_tier" ]]; then
+  printf 'release-ticket: risk tier changed after claim\n' >&2
+  exit 1
+fi
+case "$next_status" in
+  review)
+    [[ "$phase" == candidate && "$risk_tier" != low ]] || {
+      printf 'release-ticket: review requires a standard/high-risk candidate\n' >&2
+      exit 1
+    }
+    ;;
+  done)
+    [[ ( "$phase" == candidate && "$risk_tier" == low ) || ( "$phase" == reviewing && "$risk_tier" != low ) ]] || {
+      printf 'release-ticket: invalid done transition for phase=%s risk=%s\n' "$phase" "$risk_tier" >&2
+      exit 1
+    }
+    ;;
+  planned|blocked)
+    [[ "$phase" == reviewing && "$risk_tier" != low ]] || {
+      printf 'release-ticket: review outcome requires a standard/high-risk review\n' >&2
+      exit 1
+    }
+    ;;
 esac
 if ! blockers="$(dependencies_check "$run_dir")"; then
   blockers="${blockers//$'\n'/; }"
@@ -53,10 +77,10 @@ if ! blockers="$(dependencies_check "$run_dir")"; then
 fi
 
 # A mutable JSON assertion is never the release authority. Re-run the canonical
-# full check at the claimed commit and atomically replace verification evidence.
+# risk-required check at the claimed commit and atomically replace verification evidence.
 if [[ "$next_status" == "review" || "$next_status" == "done" ]]; then
-  if ! "$SCRIPT_DIR/check" "$repository" full --record "$issue_id"; then
-    printf 'release-ticket: canonical full verification failed; transition blocked\n' >&2
+  if ! "$SCRIPT_DIR/check" "$repository" "$required_tier" --record "$issue_id"; then
+    printf 'release-ticket: canonical %s verification failed; transition blocked\n' "$required_tier" >&2
     exit 1
   fi
 fi
@@ -146,8 +170,8 @@ implementation_matches_claim() {
   fi
 }
 
-recorded_implementer() {
-  local candidate=""
+recorded_implementation_claim_field() {
+  local field="$1" candidate=""
   local owner_file
   shopt -s nullglob
   for owner_file in "$run_dir"/.claim.*.review*/owner.json; do
@@ -158,18 +182,23 @@ recorded_implementer() {
     printf 'release-ticket: implementation claim history is missing\n' >&2
     return 1
   fi
-  jq -r '.owner // empty' "$candidate"
+  jq -r --arg field "$field" 'if $field == "risk_tier" then (.risk_tier // "high") else (.[$field] // empty) end' "$candidate"
 }
 
 review_is_current_and_independent() {
   local expected_verdict="$1"
-  local worktree head claim_owner implementer implementation_commit recorded_owner
+  local worktree head claim_owner implementer implementation_commit recorded_owner recorded_risk_tier
   worktree="$(claim_worktree)" || return
   head="$(git -C "$worktree" rev-parse HEAD)"
   claim_owner="$(jq -r '.owner // empty' "$claim_dir/owner.json")"
   implementer="$(jq -r '.implementer // empty' "$run_dir/implementation.json")"
   implementation_commit="$(jq -r '.commit_sha // empty' "$run_dir/implementation.json")"
-  recorded_owner="$(recorded_implementer)" || return
+  recorded_owner="$(recorded_implementation_claim_field owner)" || return
+  recorded_risk_tier="$(recorded_implementation_claim_field risk_tier)" || return
+  if [[ "$recorded_risk_tier" != "$risk_tier" ]]; then
+    printf 'release-ticket: risk tier changed after implementation handoff\n' >&2
+    return 1
+  fi
   if [[ -z "$claim_owner" || -z "$recorded_owner" || "$implementer" != "$recorded_owner" || "$implementation_commit" != "$head" || "$claim_owner" == "$recorded_owner" ]]; then
     printf 'release-ticket: approved review must use a different recorded owner label\n' >&2
     return 1
@@ -189,8 +218,8 @@ case "$next_status" in
   review)
     if ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
        ! implementation_matches_claim ||
-       ! verification_is_current_and_canonical full; then
-      printf 'release-ticket: review requires implemented handoff and current canonical full verification\n' >&2
+       ! verification_is_current_and_canonical "$required_tier"; then
+      printf 'release-ticket: review requires implemented handoff and current canonical %s verification\n' "$required_tier" >&2
       exit 1
     fi
     ;;
@@ -201,11 +230,19 @@ case "$next_status" in
     review_is_current_and_independent blocked || exit 1
     ;;
   done)
-    if ! jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null ||
-       ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
-       ! verification_is_current_and_canonical full ||
-       ! review_is_current_and_independent approved; then
-      printf 'release-ticket: done requires acceptance criteria, implementation, current canonical full verification, and reviewer attestation\n' >&2
+    if [[ "$risk_tier" == low ]]; then
+      if ! jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null ||
+         ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
+         ! implementation_matches_claim ||
+         ! verification_is_current_and_canonical fast; then
+        printf 'release-ticket: low-risk done requires acceptance criteria, implementation, and current canonical fast verification\n' >&2
+        exit 1
+      fi
+    elif ! jq -e '.acceptance_criteria | length > 0' "$run_dir/task.json" >/dev/null ||
+         ! jq -e '.status == "implemented"' "$run_dir/implementation.json" >/dev/null ||
+         ! verification_is_current_and_canonical "$required_tier" ||
+         ! review_is_current_and_independent approved; then
+      printf 'release-ticket: done requires acceptance criteria, implementation, canonical %s verification, and reviewer attestation\n' "$required_tier" >&2
       exit 1
     fi
     ;;
@@ -240,8 +277,13 @@ case "$next_status" in
     workflow_review_result "$run_dir" "$actor" "$verdict" "$(jq -r '.reviewed_commit' "$run_dir/review.json")"
     ;;
   done)
-    workflow_transition "$run_dir" reviewing approved "$actor" approve '' \
-      "$(jq -r '.reviewed_commit' "$run_dir/review.json")"
+    if [[ "$risk_tier" == low ]]; then
+      workflow_transition "$run_dir" candidate approved "$actor" approve_low_risk '' \
+        "$(jq -r '.commit_sha' "$run_dir/implementation.json")"
+    else
+      workflow_transition "$run_dir" reviewing approved "$actor" approve '' \
+        "$(jq -r '.reviewed_commit' "$run_dir/review.json")"
+    fi
     ;;
 esac
 trap - EXIT INT TERM
