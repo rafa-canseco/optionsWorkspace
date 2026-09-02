@@ -158,6 +158,12 @@ record_full() {
   expect_pass "$issue_id record full" "$HARNESS_BIN/check" workspace full --record "$issue_id"
 }
 
+set_risk() {
+  local issue_id="$1" risk_tier="$2"
+  mutate "$RUNS_ROOT/$issue_id/task.json" \
+    ".risk_tier = \"$risk_tier\" | .risk_approval = {source:\"user\",reference:\"approved fixture\"}"
+}
+
 prepare_done_gate() {
   local issue_id="$1"
   new_run "$issue_id"
@@ -185,6 +191,63 @@ expect_pass 'positive verification shape' jq -e --arg control "$CONTROL_SHA" --a
   (.commit_sha == .commands[0].commit_sha) and .commands[0].exit_code == 0 and
   .control_plane.commit_sha == $control and .control_plane.manifest_blob_sha == $manifest
 ' "$RUNS_ROOT/B1N-900/verification.json"
+
+# Approved low risk uses fast and moves directly from candidate to approved.
+select_issue_branch B1N-950
+expect_pass 'low risk start' "$HARNESS_BIN/start-ticket" B1N-950 workspace 'Low-risk fixture'
+mutate "$RUNS_ROOT/B1N-950/task.json" '.acceptance_criteria = ["Fast evidence is enough"]'
+set_risk B1N-950 low
+expect_pass 'low risk claim' "$HARNESS_BIN/claim-ticket" B1N-950 implementer "$TEST_WORKSPACE"
+expect_pass 'low risk implementation' "$HARNESS_BIN/record-implementation" B1N-950 'Low-risk fixture implemented' tracked.txt
+expect_fail 'low risk cannot enter review' "$HARNESS_BIN/release-ticket" B1N-950 review
+expect_pass 'low risk direct done' "$HARNESS_BIN/release-ticket" B1N-950 done
+expect_pass 'low risk fast evidence and direct approval' jq -e '
+  .tier == "fast" and .overall == "passed"
+' "$RUNS_ROOT/B1N-950/verification.json"
+expect_pass 'low risk workflow approved without review' jq -e '
+  .phase == "approved" and .history[-1].action == "approve_low_risk"
+' "$RUNS_ROOT/B1N-950/workflow.json"
+expect_pass 'low risk review remains pending' jq -e '.verdict == "pending"' "$RUNS_ROOT/B1N-950/review.json"
+
+# Standard risk uses fast but still requires an independent reviewer.
+select_issue_branch B1N-951
+expect_pass 'standard risk start' "$HARNESS_BIN/start-ticket" B1N-951 workspace 'Standard-risk fixture'
+mutate "$RUNS_ROOT/B1N-951/task.json" '.acceptance_criteria = ["Independent review remains required"]'
+set_risk B1N-951 standard
+expect_pass 'standard risk claim' "$HARNESS_BIN/claim-ticket" B1N-951 implementer "$TEST_WORKSPACE"
+expect_pass 'standard risk implementation' "$HARNESS_BIN/record-implementation" B1N-951 'Standard-risk fixture implemented' tracked.txt
+expect_fail 'standard risk cannot bypass review' "$HARNESS_BIN/release-ticket" B1N-951 done
+expect_pass 'standard risk release review' "$HARNESS_BIN/release-ticket" B1N-951 review
+expect_pass 'standard risk claim reviewer' "$HARNESS_BIN/claim-ticket" B1N-951 reviewer "$TEST_WORKSPACE"
+expect_pass 'standard risk record review' "$HARNESS_BIN/record-review" B1N-951 approved
+expect_pass 'standard risk done' "$HARNESS_BIN/release-ticket" B1N-951 done
+expect_pass 'standard risk canonical fast evidence' jq -e '
+  .tier == "fast" and .overall == "passed"
+' "$RUNS_ROOT/B1N-951/verification.json"
+
+# Lower tiers require an explicit approval source, and risk is frozen at claim.
+select_issue_branch B1N-952
+expect_pass 'unapproved low risk start' "$HARNESS_BIN/start-ticket" B1N-952 workspace 'Unapproved low-risk fixture'
+mutate "$RUNS_ROOT/B1N-952/task.json" '.acceptance_criteria = ["Approval required"] | .risk_tier = "low" | .risk_approval = null'
+expect_fail 'unapproved low risk rejected' "$HARNESS_BIN/validate-run" B1N-952
+set_risk B1N-952 standard
+expect_pass 'approved standard risk validates' "$HARNESS_BIN/validate-run" B1N-952
+expect_pass 'approved standard risk claim' "$HARNESS_BIN/claim-ticket" B1N-952 implementer "$TEST_WORKSPACE"
+expect_pass 'approved standard risk implementation' "$HARNESS_BIN/record-implementation" B1N-952 'Risk freeze fixture implemented' tracked.txt
+mutate "$RUNS_ROOT/B1N-952/task.json" '.risk_tier = "high"'
+expect_fail 'risk change after claim rejected' "$HARNESS_BIN/release-ticket" B1N-952 review
+
+# Legacy tasks without a risk field remain high risk.
+select_issue_branch B1N-953
+expect_pass 'legacy risk start' "$HARNESS_BIN/start-ticket" B1N-953 workspace 'Legacy risk fixture'
+mutate "$RUNS_ROOT/B1N-953/task.json" '.acceptance_criteria = ["Legacy defaults high"] | del(.risk_tier,.risk_approval)'
+expect_pass 'legacy risk validates' "$HARNESS_BIN/validate-run" B1N-953
+expect_pass 'legacy risk claim' "$HARNESS_BIN/claim-ticket" B1N-953 implementer "$TEST_WORKSPACE"
+expect_pass 'legacy claim captures high risk' jq -e '.risk_tier == "high"' "$RUNS_ROOT/B1N-953/.claim/owner.json"
+expect_pass 'legacy risk implementation' "$HARNESS_BIN/record-implementation" B1N-953 'Legacy risk fixture implemented' tracked.txt
+expect_fail 'legacy high risk cannot bypass review' "$HARNESS_BIN/release-ticket" B1N-953 done
+expect_pass 'legacy high risk release review' "$HARNESS_BIN/release-ticket" B1N-953 review
+expect_pass 'legacy high risk canonical full evidence' jq -e '.tier == "full" and .overall == "passed"' "$RUNS_ROOT/B1N-953/verification.json"
 
 # workflow.json remains authoritative if the task.status projection fails.
 select_issue_branch B1N-923

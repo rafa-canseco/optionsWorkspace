@@ -4,7 +4,7 @@ workflow_next_action() {
   case "$1" in
     planned) printf 'claim implementation\n' ;;
     implementing) printf 'record implementation\n' ;;
-    candidate) printf 'release for review\n' ;;
+    candidate) printf 'release candidate\n' ;;
     awaiting_review) printf 'claim independent review\n' ;;
     reviewing) printf 'record verdict and release\n' ;;
     repair) printf 'claim repair implementation\n' ;;
@@ -29,7 +29,8 @@ workflow_edge_allowed() {
   case "$1:$2:$3" in
     planned:implementing:claim_implementation|repair:implementing:claim_repair|\
     implementing:candidate:record_implementation|candidate:awaiting_review:release_review|\
-    awaiting_review:reviewing:claim_review|reviewing:repair:changes_requested|\
+    candidate:approved:approve_low_risk|awaiting_review:reviewing:claim_review|\
+    reviewing:repair:changes_requested|\
     reviewing:repair:review_blocked|reviewing:human_blocked:repair_budget_exhausted|\
     reviewing:approved:approve) return 0 ;;
     *) return 1 ;;

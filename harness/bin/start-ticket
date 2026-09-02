@@ -59,6 +59,8 @@ jq -n \
     acceptance_criteria: [],
     repositories: [$repository],
     dependencies: [],
+    risk_tier: "high",
+    risk_approval: null,
     status: "planned",
     created_at: $created_at
   }' > "$run_dir/task.json"

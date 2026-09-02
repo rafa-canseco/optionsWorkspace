@@ -39,9 +39,32 @@
       },
       "default": []
     },
+    "risk_tier": { "enum": ["low", "standard", "high"], "default": "high" },
+    "risk_approval": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["source", "reference"],
+      "properties": {
+        "source": { "enum": ["linear", "user"] },
+        "reference": { "type": "string", "minLength": 1 }
+      },
+      "default": null
+    },
     "status": {
       "enum": ["planned", "in_progress", "review", "blocked", "done"]
     },
     "created_at": { "type": "string", "format": "date-time" }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "risk_tier": { "enum": ["low", "standard"] } },
+        "required": ["risk_tier"]
+      },
+      "then": {
+        "required": ["risk_approval"],
+        "properties": { "risk_approval": { "type": "object" } }
+      }
+    }
+  ]
 }
